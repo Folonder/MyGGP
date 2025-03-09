@@ -1,0 +1,135 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Knight and King
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Roles
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (role knight)
+  (role king)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Base & Input
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (<= (base (control ?p)) (role ?p))
+
+  (succ y)	; имеет место
+  (succ n)  ; отсутствует 
+   
+  (base (dragon_is_defeated u))
+  (<= (base (dragon_is_defeated ?x)) (succ ?x))
+  (base (knight_rewarded u))
+  (<= (base (knight_rewarded ?x)) (succ ?x))
+  
+  (<= (input knight (fight ?x)) (succ ?x))
+  (<= (input king (give_half_kingdom ?x)) (succ ?x))
+  (<= (input ?p noop) (role ?p)) 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Initial State
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (init (control knight))
+  (init (dragon_is_defeated u))
+  (init (knight_rewarded u))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Dynamic Components
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (<= (next (dragon_is_defeated ?x))
+		(true (dragon_is_defeated u))
+		(does knight (fight ?x))
+  )
+
+  (<= (next (dragon_is_defeated ?x))
+		;(not (does knight (fight ?z))) ; ОТСУТСТВУЕТ хотя бы один вариант хода, а нужно чтобы отсутствовали ВСЕ ходы!!!
+		(not (does knight (fight y)))
+		(not (does knight (fight n)))
+		(true (dragon_is_defeated ?x))	
+  )
+
+  (<= (next (knight_rewarded ?x))
+		(true (dragon_is_defeated y))
+		(true (knight_rewarded u))
+		(does king (give_half_kingdom ?x))
+  )
+
+  (<= (next (knight_rewarded ?x))
+		;(not (does king (give_half_kingdom ?z))) ; ОТСУТСТВУЕТ хотя бы один вариант хода, а нужно чтобы отсутствовали ВСЕ ходы!!!
+		(not (does king (give_half_kingdom y)))
+		(not (does king (give_half_kingdom n)))
+		(true (knight_rewarded ?x))
+  )
+
+  (<= (next (control king))
+		(true (control knight))
+  )  
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (<= (legal knight (fight ?x))
+		(true (control knight))
+		(succ ?x)
+  )
+  
+  (<= (legal king noop)
+		(true (control knight))
+  )
+
+  (<= (legal knight noop)
+		(true (control king))
+  )
+
+  (<= (legal king (give_half_kingdom ?x))
+		(true (control king))
+		(succ ?x)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (<= (goal knight 50)
+		(true (dragon_is_defeated n))
+  )
+
+  (<= (goal king 0)
+		(true (dragon_is_defeated n))
+  )
+  
+  (<= (goal knight 75)
+		(true (dragon_is_defeated y))
+		(true (knight_rewarded y))
+  )
+
+  (<= (goal king 75)
+		(true (dragon_is_defeated y))
+		(true (knight_rewarded y))
+  )
+  
+  (<= (goal knight 0)
+		(true (dragon_is_defeated y))
+		(true (knight_rewarded n))
+  )
+
+  (<= (goal king 100)
+		(true (dragon_is_defeated y))
+		(true (knight_rewarded n))
+  )
+  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+  (<= terminal
+      (true (dragon_is_defeated n))
+  )
+
+  (<= terminal
+      (true (knight_rewarded ?x))
+	  (succ ?x)
+  )
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -1,0 +1,121 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Tictactoe
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Roles
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(role xplayer)
+(role oplayer)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Base & Input
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(index 1) (index 2) (index 3)
+(<= (base (cell 1 ?y b)) (index ?y))
+(<= (base (cell 1 ?y x)) (index ?y))
+(<= (base (cell 1 ?y o)) (index ?y))
+(<= (base (control ?p)) (role ?p))
+
+(<= (input ?p (mark ?y)) (index ?y) (role ?p))
+(<= (input ?p noop) (role ?p))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Initial State
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(init (cell 1 1 b))
+(init (cell 1 2 b))
+(init (cell 1 3 b))
+(init (control xplayer))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Dynamic Components
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Cell
+
+(<= (next (cell 1 ?n x))
+(does xplayer (mark ?n))
+(true (cell 1 ?n b)))
+
+(<= (next (cell 1 ?n o))
+(does oplayer (mark ?n))
+(true (cell 1 ?n b)))
+
+(<= (next (cell 1 ?n ?w))
+(true (cell 1 ?n ?w))
+(distinct ?w b))
+
+(<= (next (cell 1 ?n b))
+(does ?w (mark ?k))
+(true (cell 1 ?n b))
+(distinct ?n ?k))
+
+(<= (next (control xplayer))
+(true (control oplayer)))
+
+(<= (next (control oplayer))
+(true (control xplayer)))
+
+
+(<= (line ?x)
+(true (cell 1 1 ?x))
+(true (cell 1 2 ?x)))
+
+(<= (line ?x)
+(true (cell 1 2 ?x))
+(true (cell 1 3 ?x)))
+
+
+(<= open
+(true (cell 1 ?n b)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(<= (legal ?w (mark ?y))
+(true (cell 1 ?y b))
+(true (control ?w)))
+
+(<= (legal xplayer noop)
+(true (control oplayer)))
+
+(<= (legal oplayer noop)
+(true (control xplayer)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(<= (goal xplayer 100)
+(line x))
+
+(<= (goal xplayer 50)
+(not (line x))
+(not (line o))
+(not open))
+
+(<= (goal xplayer 0)
+(line o))
+
+(<= (goal oplayer 100)
+(line o))
+
+(<= (goal oplayer 50)
+(not (line x))
+(not (line o))
+(not open))
+
+(<= (goal oplayer 0)
+(line x))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(<= terminal
+(line x))
+
+(<= terminal
+(line o))
+
+(<= terminal
+(not open))

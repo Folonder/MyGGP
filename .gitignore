@@ -1,0 +1,12 @@
+/bin/
+/logs/
+/ggp-base.jar
+/.gradle/
+/build/
+/out/
+/.idea/
+MyTur
+*.DS_Store
+/matches/
+/all_trees/
+*.dot

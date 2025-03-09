@@ -1,0 +1,7 @@
+{
+  "gameName": "simultaneousTicTacToe1x3",  
+  "rulesheet": "simultaneousTicTacToe1x3.kif",
+  "stylesheet": "simultaneousTicTacToe1x3.xsl",
+  "description": "simultaneousTicTacToe1x3.txt",
+  "user_interface": "simultaneousTicTacToe1x3.js"
+}
