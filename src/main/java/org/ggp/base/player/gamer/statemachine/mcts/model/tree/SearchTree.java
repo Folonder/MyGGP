@@ -1,3 +1,5 @@
+// Изменения в файле src/main/java/org/ggp/base/player/gamer/statemachine/mcts/model/tree/SearchTree.java
+
 package org.ggp.base.player.gamer.statemachine.mcts.model.tree;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,7 +14,6 @@ import org.ggp.base.util.statemachine.exceptions.MoveDefinitionException;
 import java.util.Map;
 
 public class SearchTree {
-
     private final transient StateMachine gameModel;
     private final transient PoolOfStrategies strategies = new PoolOfStrategies();
     private SearchTreeNode root;
@@ -32,8 +33,7 @@ public class SearchTree {
     }
 
     public void grow() throws MoveDefinitionException {
-
-        // Выбрать листовой “незавершенный” узел с наибольшей оценкой
+        // Выбрать листовой "незавершенный" узел с наибольшей оценкой
         SearchTreeNode selectedNode = getStrategies().getSelectionStrategy().execute(root);
 
         // Расширить выбранный узел и выбрать один из дочерних узлов для симуляции игры;
@@ -69,7 +69,6 @@ public class SearchTree {
     }
 
     public ObjectNode toJSONbyJackson() {
-        return root.toJSONbyJackson( new ObjectMapper() );
+        return root.toJSONbyJackson(new ObjectMapper());
     }
 }
-

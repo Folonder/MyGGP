@@ -2,6 +2,7 @@ package org.ggp.base.player.gamer.statemachine.mcts;
 
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeStartEvent;
+import org.ggp.base.player.gamer.statemachine.mcts.logger.MCTSTreeLogger;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTreeNode;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.CumulativeStatistics;
@@ -26,8 +27,13 @@ import java.util.List;
 public class MCTSGamer extends SampleGamer {
     private final long SAFETY_MARGIN = 2000;
 
+    // Конфигурация логирования
+    private static final int DEFAULT_LOGGING_FREQUENCY = 1000; // Логировать каждые 1000 итераций
+    private static final boolean ENABLE_MCTS_LOGGING = true;  // Флаг для включения/выключения логирования
+
     private SearchTree tree = null;
     private int turnCount = 0;
+    private MCTSTreeLogger treeLogger;
 
     @Override
     public void stateMachineMetaGame(long xiTimeout)
@@ -42,74 +48,73 @@ public class MCTSGamer extends SampleGamer {
     @Override
     public void stateMachineStop() {
         super.stateMachineStop();
-
-
-//        this.writeLogInfoToDotFile();
     }
 
     @Override
     public void stateMachineAbort() {
         super.stateMachineAbort();
-//        this.writeLogInfoToDotFile();
     }
 
-
+    @Override
     public Move stateMachineSelectMove(long xiTimeout) throws TransitionDefinitionException, MoveDefinitionException, GoalDefinitionException {
-
-       //long start = System.currentTimeMillis();
-
         SearchTreeNode startRootNode = tree.findNode(getCurrentState());
-        // Perform tree cutting
+        // Выполняем обрезку дерева
         tree.cut(startRootNode);
+
+        // Инициализируем логгер для текущего хода
+        if (ENABLE_MCTS_LOGGING) {
+            String logDir = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/mcts_logs";
+            treeLogger = new MCTSTreeLogger(getMatch().getMatchId(), turnCount, logDir, DEFAULT_LOGGING_FREQUENCY);
+
+            // Логируем начальное состояние дерева
+            treeLogger.logTreeState(tree.toJSONbyJackson());
+        }
 
         long finishBy = xiTimeout - SAFETY_MARGIN;
         int iterations = 0;
         while (System.currentTimeMillis() < finishBy) {
             iterations++;
             tree.grow();
+
+            // Логируем текущее состояние дерева после итерации
+            if (ENABLE_MCTS_LOGGING) {
+                treeLogger.logTreeState(tree.toJSONbyJackson());
+            }
         }
 
+        Move bestMove = tree.getBestAction(getRole());
 
-//        for(int i = 1; i <= 10; i++) {
-//            tree.grow();
-//        }
+        // Сохраняем JSON файл с итоговым деревом для этого хода
+        saveTreeToJson(tree);
 
-         Move bestMove = tree.getBestAction(getRole());
-
-
-        // Open up the JSON file for this match, and save the match there.
-        String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
-        File f = new File(filePath);
-        if (f.exists()) f.delete();
-        BufferedWriter bw = null;
-        try {
-            f.getParentFile().mkdirs();
-            f.createNewFile();
-            bw = new BufferedWriter(new FileWriter(f));
-            bw.write(tree.toJSONbyJackson().toString());
-            bw.flush();
-            bw.close();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
- /*
-        long stop = System.currentTimeMillis();
-        List<Move> moves = getStateMachine().getLegalMoves(getCurrentState(), getRole());
-        notifyObservers(new GamerSelectedMoveEvent(moves, bestMove, stop - start));
-*/
         notifyObservers(new TreeEvent(tree, turnCount, false));
         turnCount++;
 
         return bestMove;
-
     }
 
+    /**
+     * Сохраняет дерево в JSON файл
+     */
+    private void saveTreeToJson(SearchTree tree) {
+        String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
+        File f = new File(filePath);
+        if (f.exists()) f.delete();
+        try {
+            f.getParentFile().mkdirs();
+            f.createNewFile();
+
+            // Используем ObjectMapper из Jackson для записи дерева в JSON файл
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            mapper.writeValue(f, tree.toJSONbyJackson());
+        } catch (IOException e) {
+            System.err.println("Ошибка при сохранении дерева в JSON: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
 
     @Override
     public LogInfoNode createLogInfoTree(Move selectedMove) {
-
-
         MachineState selectedNextState = null;
         try {
             selectedNextState = getStateMachine().getRandomNextState(this.tree.getRoot().getState(), this.getRole(), selectedMove);
