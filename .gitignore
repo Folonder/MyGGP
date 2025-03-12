@@ -7,6 +7,5 @@
 /.idea/
 MyTur
 *.DS_Store
-/matches/
 /all_trees/
 *.dot

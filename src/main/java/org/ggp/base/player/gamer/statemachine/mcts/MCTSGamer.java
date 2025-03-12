@@ -2,11 +2,11 @@ package org.ggp.base.player.gamer.statemachine.mcts;
 
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeStartEvent;
-import org.ggp.base.player.gamer.statemachine.mcts.logger.MCTSTreeLogger;
-import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
-import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTreeNode;
+import org.ggp.base.player.gamer.statemachine.mcts.logger.MCTSRedisLogger;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.CumulativeStatistics;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.StatisticsForActions;
+import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
+import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTreeNode;
 import org.ggp.base.player.gamer.statemachine.mcts.observer.TreeObserver;
 import org.ggp.base.player.gamer.statemachine.sample.SampleGamer;
 import org.ggp.base.util.statemachine.MachineState;
@@ -27,13 +27,13 @@ import java.util.List;
 public class MCTSGamer extends SampleGamer {
     private final long SAFETY_MARGIN = 2000;
 
-    // Конфигурация логирования
-    private static final int DEFAULT_LOGGING_FREQUENCY = 1000; // Логировать каждые 1000 итераций
-    private static final boolean ENABLE_MCTS_LOGGING = true;  // Флаг для включения/выключения логирования
+    // Конфигурация логгера
+    private static final int DEFAULT_LOGGING_FREQUENCY = 1000;
+    private static final boolean ENABLE_REDIS_LOGGING = true;
 
     private SearchTree tree = null;
     private int turnCount = 0;
-    private MCTSTreeLogger treeLogger;
+    private String currentTreeId = null;
 
     @Override
     public void stateMachineMetaGame(long xiTimeout)
@@ -48,44 +48,75 @@ public class MCTSGamer extends SampleGamer {
     @Override
     public void stateMachineStop() {
         super.stateMachineStop();
+        saveTreeIdToFile();
     }
 
     @Override
     public void stateMachineAbort() {
         super.stateMachineAbort();
+        saveTreeIdToFile();
     }
 
     @Override
     public Move stateMachineSelectMove(long xiTimeout) throws TransitionDefinitionException, MoveDefinitionException, GoalDefinitionException {
         SearchTreeNode startRootNode = tree.findNode(getCurrentState());
-        // Выполняем обрезку дерева
         tree.cut(startRootNode);
 
-        // Инициализируем логгер для текущего хода
-        if (ENABLE_MCTS_LOGGING) {
-            String logDir = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/mcts_logs";
-            treeLogger = new MCTSTreeLogger(getMatch().getMatchId(), turnCount, logDir, DEFAULT_LOGGING_FREQUENCY);
+        // Инициализируем Redis-логгер
+        MCTSRedisLogger redisLogger = null;
+        if (ENABLE_REDIS_LOGGING) {
+            redisLogger = new MCTSRedisLogger(
+                    getMatch().getMatchId(),
+                    turnCount,
+                    DEFAULT_LOGGING_FREQUENCY
+            );
 
-            // Логируем начальное состояние дерева
-            treeLogger.logTreeState(tree.toJSONbyJackson());
+            // Сохраняем ID для последующего доступа
+            currentTreeId = redisLogger.getTreeId();
+
+            // Логируем начальное состояние
+            redisLogger.logTreeState(tree.toJSONbyJackson());
         }
 
         long finishBy = xiTimeout - SAFETY_MARGIN;
         int iterations = 0;
+
         while (System.currentTimeMillis() < finishBy) {
             iterations++;
             tree.grow();
 
-            // Логируем текущее состояние дерева после итерации
-            if (ENABLE_MCTS_LOGGING) {
-                treeLogger.logTreeState(tree.toJSONbyJackson());
+            // Логируем в Redis
+            if (ENABLE_REDIS_LOGGING && redisLogger != null) {
+                redisLogger.logTreeState(tree.toJSONbyJackson());
             }
         }
 
+        // Выбираем лучший ход
         Move bestMove = tree.getBestAction(getRole());
 
-        // Сохраняем JSON файл с итоговым деревом для этого хода
-        saveTreeToJson(tree);
+        // Сохраняем файл с ID дерева
+        saveTreeIdToFile();
+
+        // Закрываем логгер
+        if (redisLogger != null) {
+            redisLogger.close();
+        }
+
+        // Стандартная система логирования
+        String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
+        try {
+            File f = new File(filePath);
+            if (f.exists()) f.delete();
+            f.getParentFile().mkdirs();
+            f.createNewFile();
+
+            BufferedWriter bw = new BufferedWriter(new FileWriter(f));
+            bw.write(tree.toJSONbyJackson().toString());
+            bw.flush();
+            bw.close();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
 
         notifyObservers(new TreeEvent(tree, turnCount, false));
         turnCount++;
@@ -94,21 +125,24 @@ public class MCTSGamer extends SampleGamer {
     }
 
     /**
-     * Сохраняет дерево в JSON файл
+     * Сохраняет ID текущего дерева в файл для доступа из веб-интерфейса
      */
-    private void saveTreeToJson(SearchTree tree) {
-        String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
-        File f = new File(filePath);
-        if (f.exists()) f.delete();
-        try {
-            f.getParentFile().mkdirs();
-            f.createNewFile();
+    private void saveTreeIdToFile() {
+        if (currentTreeId == null) return;
 
-            // Используем ObjectMapper из Jackson для записи дерева в JSON файл
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            mapper.writeValue(f, tree.toJSONbyJackson());
+        try {
+            String dirPath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString();
+            File dir = new File(dirPath);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+
+            File treeIdFile = new File(dirPath + "/tree_id.txt");
+            FileWriter writer = new FileWriter(treeIdFile);
+            writer.write(currentTreeId);
+            writer.close();
         } catch (IOException e) {
-            System.err.println("Ошибка при сохранении дерева в JSON: " + e.getMessage());
+            System.err.println("Ошибка при сохранении ID дерева: " + e.getMessage());
             e.printStackTrace();
         }
     }
