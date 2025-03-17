@@ -2,7 +2,7 @@ package org.ggp.base.player.gamer.statemachine.mcts;
 
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeStartEvent;
-import org.ggp.base.player.gamer.statemachine.mcts.logger.MCTSRedisLogger;
+import org.ggp.base.player.gamer.statemachine.mcts.logger.AsyncMCTSRedisLogger;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.CumulativeStatistics;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.StatisticsForActions;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
@@ -25,23 +25,31 @@ import java.util.Collections;
 import java.util.List;
 
 public class MCTSGamer extends SampleGamer {
+    // Время безопасного завершения
     private final long SAFETY_MARGIN = 2000;
 
     // Конфигурация логгера
     private static final int DEFAULT_LOGGING_FREQUENCY = 1000;
     private static final boolean ENABLE_REDIS_LOGGING = true;
 
+    // Состояние игры
     private SearchTree tree = null;
     private int turnCount = 0;
     private String currentTreeId = null;
+    private AsyncMCTSRedisLogger redisLogger = null;
 
     @Override
     public void stateMachineMetaGame(long xiTimeout)
             throws TransitionDefinitionException, MoveDefinitionException,
             GoalDefinitionException {
+        // Инициализируем дерево поиска
         tree = new SearchTree(getStateMachine());
         turnCount = 0;
+
+        // Добавляем наблюдателя за деревом
         this.addObserver(new TreeObserver());
+
+        // Уведомляем о старте дерева
         notifyObservers(new TreeStartEvent());
     }
 
@@ -49,23 +57,26 @@ public class MCTSGamer extends SampleGamer {
     public void stateMachineStop() {
         super.stateMachineStop();
         saveTreeIdToFile();
+        closeRedisLogger();
     }
 
     @Override
     public void stateMachineAbort() {
         super.stateMachineAbort();
         saveTreeIdToFile();
+        closeRedisLogger();
     }
 
     @Override
-    public Move stateMachineSelectMove(long xiTimeout) throws TransitionDefinitionException, MoveDefinitionException, GoalDefinitionException {
+    public Move stateMachineSelectMove(long xiTimeout)
+            throws TransitionDefinitionException, MoveDefinitionException, GoalDefinitionException {
+        // Находим текущий узел в дереве
         SearchTreeNode startRootNode = tree.findNode(getCurrentState());
         tree.cut(startRootNode);
 
         // Инициализируем Redis-логгер
-        MCTSRedisLogger redisLogger = null;
         if (ENABLE_REDIS_LOGGING) {
-            redisLogger = new MCTSRedisLogger(
+            redisLogger = new AsyncMCTSRedisLogger(
                     getMatch().getMatchId(),
                     turnCount,
                     DEFAULT_LOGGING_FREQUENCY
@@ -74,18 +85,20 @@ public class MCTSGamer extends SampleGamer {
             // Сохраняем ID для последующего доступа
             currentTreeId = redisLogger.getTreeId();
 
-            // Логируем начальное состояние
+            // Логируем начальное состояние дерева
             redisLogger.logTreeState(tree.toJSONbyJackson());
         }
 
+        // Вычисляем время завершения с учетом безопасного запаса
         long finishBy = xiTimeout - SAFETY_MARGIN;
         int iterations = 0;
 
+        // Выполняем поиск, пока не истечет время
         while (System.currentTimeMillis() < finishBy) {
             iterations++;
             tree.grow();
 
-            // Логируем в Redis
+            // Логируем состояние дерева в Redis
             if (ENABLE_REDIS_LOGGING && redisLogger != null) {
                 redisLogger.logTreeState(tree.toJSONbyJackson());
             }
@@ -94,30 +107,16 @@ public class MCTSGamer extends SampleGamer {
         // Выбираем лучший ход
         Move bestMove = tree.getBestAction(getRole());
 
-        // Сохраняем файл с ID дерева
+        // Сохраняем ID дерева в файл
         saveTreeIdToFile();
 
-        // Закрываем логгер
-        if (redisLogger != null) {
-            redisLogger.close();
-        }
+        // Закрываем Redis-логгер
+        closeRedisLogger();
 
-        // Стандартная система логирования
-        String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
-        try {
-            File f = new File(filePath);
-            if (f.exists()) f.delete();
-            f.getParentFile().mkdirs();
-            f.createNewFile();
+        // Сохраняем состояние дерева в файл
+        saveTreeToFile();
 
-            BufferedWriter bw = new BufferedWriter(new FileWriter(f));
-            bw.write(tree.toJSONbyJackson().toString());
-            bw.flush();
-            bw.close();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
+        // Уведомляем наблюдателей о событии дерева
         notifyObservers(new TreeEvent(tree, turnCount, false));
         turnCount++;
 
@@ -125,25 +124,62 @@ public class MCTSGamer extends SampleGamer {
     }
 
     /**
-     * Сохраняет ID текущего дерева в файл для доступа из веб-интерфейса
+     * Сохраняет ID текущего дерева в файл
      */
     private void saveTreeIdToFile() {
         if (currentTreeId == null) return;
 
         try {
-            String dirPath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString();
+            String dirPath = getMatchFolderString() + "/" +
+                    this.getName() + "__" +
+                    this.getRoleName().toString();
+
             File dir = new File(dirPath);
             if (!dir.exists()) {
                 dir.mkdirs();
             }
 
             File treeIdFile = new File(dirPath + "/tree_id.txt");
-            FileWriter writer = new FileWriter(treeIdFile);
-            writer.write(currentTreeId);
-            writer.close();
+            try (FileWriter writer = new FileWriter(treeIdFile)) {
+                writer.write(currentTreeId);
+            }
         } catch (IOException e) {
             System.err.println("Ошибка при сохранении ID дерева: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    /**
+     * Сохраняет состояние дерева в файл
+     */
+    private void saveTreeToFile() {
+        String filePath = getMatchFolderString() + "/" +
+                this.getName() + "__" +
+                this.getRoleName().toString() +
+                "/step_" + turnCount + ".json";
+
+        try {
+            File f = new File(filePath);
+            if (f.exists()) f.delete();
+            f.getParentFile().mkdirs();
+            f.createNewFile();
+
+            try (BufferedWriter bw = new BufferedWriter(new FileWriter(f))) {
+                bw.write(tree.toJSONbyJackson().toString());
+                bw.flush();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Ошибка при сохранении дерева", e);
+        }
+    }
+
+    /**
+     * Закрывает Redis-логгер
+     */
+    private void closeRedisLogger() {
+        if (redisLogger != null) {
+            redisLogger.close();
+            redisLogger = null;
         }
     }
 
@@ -151,21 +187,27 @@ public class MCTSGamer extends SampleGamer {
     public LogInfoNode createLogInfoTree(Move selectedMove) {
         MachineState selectedNextState = null;
         try {
-            selectedNextState = getStateMachine().getRandomNextState(this.tree.getRoot().getState(), this.getRole(), selectedMove);
-        }
-        catch (Exception e) {
+            selectedNextState = getStateMachine().getRandomNextState(
+                    this.tree.getRoot().getState(),
+                    this.getRole(),
+                    selectedMove
+            );
+        } catch (Exception e) {
             e.printStackTrace();
         }
         return makeLogTreeFromSearchTree(this.tree.getRoot(), selectedNextState);
     }
 
+    /**
+     * Создает узел логирования из узла поиска
+     */
     public LogInfoNode makeLogTreeFromSearchTree(SearchTreeNode node, MachineState selectedNextState) {
         LogInfoNode result = this.createLogInfoNode(node.getState());
 
         result.tableData.add(Collections.singletonList("NUM VISITS"));
         result.tableData.add(Collections.singletonList(String.valueOf(node.getStatistics().getNumVisits())));
 
-        // Insert additional statistic data
+        // Добавляем статистику
         CumulativeStatistics statistics = node.getStatistics();
         for (Role role : statistics.getRoles()) {
             result.tableData.add(Collections.singletonList("ROLE :: " + role));
@@ -178,7 +220,6 @@ public class MCTSGamer extends SampleGamer {
             actions_num_uses.add("Uses num");
 
             for (Move action : statistics.getUsedActions(role)) {
-
                 StatisticsForActions.ActionStatistics actionStatistics = statistics.get(role, action);
                 actions.add(action.toString());
                 actions_scores.add(String.valueOf(actionStatistics.getScore()));
@@ -189,8 +230,7 @@ public class MCTSGamer extends SampleGamer {
                 result.tableData.add(actions);
                 result.tableData.add(actions_scores);
                 result.tableData.add(actions_num_uses);
-            }
-            else {
+            } else {
                 result.tableData.add(Collections.singletonList("NO CALCULATION"));
             }
         }

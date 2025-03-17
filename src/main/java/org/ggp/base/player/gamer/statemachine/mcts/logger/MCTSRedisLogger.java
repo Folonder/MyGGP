@@ -75,7 +75,7 @@ public class MCTSRedisLogger implements AutoCloseable {
         poolConfig.setNumTestsPerEvictionRun(3);
         poolConfig.setBlockWhenExhausted(true);
 
-        jedisPool = new JedisPool(poolConfig, REDIS_HOST, REDIS_PORT);
+        jedisPool = new JedisPool(poolConfig, REDIS_HOST, REDIS_PORT, 2000, "password");
 
         // Генерируем уникальный ID для дерева
         this.treeId = matchId + ":" + turnNumber + ":" + UUID.randomUUID().toString().substring(0, 8);
