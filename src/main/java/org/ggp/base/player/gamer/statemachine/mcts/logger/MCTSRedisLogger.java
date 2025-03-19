@@ -1,208 +1,169 @@
 package org.ggp.base.player.gamer.statemachine.mcts.logger;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
-import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.exceptions.JedisException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.fge.jsonpatch.JsonPatch;
-import com.github.fge.jsonpatch.diff.JsonDiff;
-
-import java.util.Queue;
-import java.util.UUID;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * Сервис для логирования дерева MCTS в Redis
+ * Упрощенный логгер для записи состояний MCTS дерева в Redis
+ * с надежной гарантией записи начального состояния
  */
 public class MCTSRedisLogger implements AutoCloseable {
-    private static final ObjectMapper mapper = new ObjectMapper();
-    private static final String REDIS_HOST = "localhost";  // Можно вынести в конфигурацию
-    private static final int REDIS_PORT = 5003;            // Можно вынести в конфигурацию
+    private static final String REDIS_HOST = "localhost";
+    private static final int REDIS_PORT = 5003;
+    private static final String REDIS_PASSWORD = "password";
 
-    private final JedisPool jedisPool;
     private final String treeId;
     private final int turnNumber;
-    private final AtomicInteger iterationCounter = new AtomicInteger(0);
-    private final int loggingFrequency;
-    private JsonNode previousTree = null;
+    private final ObjectMapper mapper = new ObjectMapper();
 
-    // Константы для ключей Redis
+    // Redis key prefixes
     private static final String KEY_PREFIX = "mcts:";
     private static final String INITIAL_SUFFIX = ":initial";
     private static final String PATCH_SUFFIX = ":patch:";
     private static final String META_SUFFIX = ":meta";
-    private static final int EXPIRATION_SECONDS = 3600 * 24; // 24 часа
 
-    // Для пакетной записи
-    private final Queue<PatchEntry> batchQueue = new ConcurrentLinkedQueue<>();
-    private final int batchSize = 10; // Размер пакета для записи
-    private final AtomicBoolean processingBatch = new AtomicBoolean(false);
+    private int patchCounter = 0;
+    private JsonNode previousTree = null;
+    private boolean initialSaved = false;
 
     /**
-     * Класс для хранения информации о патче
+     * Создаёт новый логгер для указанного хода
      */
-    private static class PatchEntry {
-        final int iteration;
-        final JsonNode patch;
-
-        PatchEntry(int iteration, JsonNode patch) {
-            this.iteration = iteration;
-            this.patch = patch;
-        }
-    }
-
-    /**
-     * Создает новый экземпляр логгера
-     * @param matchId идентификатор матча
-     * @param turnNumber номер хода
-     * @param loggingFrequency частота логирования
-     */
-    public MCTSRedisLogger(String matchId, int turnNumber, int loggingFrequency) {
-        JedisPoolConfig poolConfig = new JedisPoolConfig();
-        poolConfig.setMaxTotal(128);
-        poolConfig.setMaxIdle(128);
-        poolConfig.setMinIdle(16);
-        poolConfig.setTestOnBorrow(true);
-        poolConfig.setTestOnReturn(true);
-        poolConfig.setTestWhileIdle(true);
-        poolConfig.setNumTestsPerEvictionRun(3);
-        poolConfig.setBlockWhenExhausted(true);
-
-        jedisPool = new JedisPool(poolConfig, REDIS_HOST, REDIS_PORT, 2000, "password");
-
-        // Генерируем уникальный ID для дерева
-        this.treeId = matchId + ":" + turnNumber + ":" + UUID.randomUUID().toString().substring(0, 8);
+    public MCTSRedisLogger(String matchId, int turnNumber) {
+        this.treeId = matchId + ":" + turnNumber;
         this.turnNumber = turnNumber;
-        this.loggingFrequency = loggingFrequency;
 
-        // Сохраняем метаданные
-        try (Jedis jedis = jedisPool.getResource()) {
+        // Инициализация происходит в конструкторе
+        try (Jedis jedis = new Jedis(REDIS_HOST, REDIS_PORT)) {
+            jedis.auth(REDIS_PASSWORD);
+
+            // Сохраняем метаданные
             jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "matchId", matchId);
             jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "turnNumber", String.valueOf(turnNumber));
             jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "createdAt", String.valueOf(System.currentTimeMillis()));
-            jedis.expire(KEY_PREFIX + treeId + META_SUFFIX, EXPIRATION_SECONDS);
+            jedis.expire(KEY_PREFIX + treeId + META_SUFFIX, 86400);
+
+            // Сбрасываем счетчик патчей
+            jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "totalPatches", "0");
+
+            System.out.println("MCTSRedisLogger initialized for turn " + turnNumber);
+        } catch (JedisException e) {
+            System.err.println("Redis connection error during initialization: " + e.getMessage());
+            throw e; // Повторное возбуждение исключения для обработки на уровне выше
         }
     }
 
     /**
-     * Логирует состояние дерева MCTS
-     * @param treeJson текущее состояние дерева
-     * @return true если лог был сохранен, false если был пропущен из-за частоты
+     * Сохраняет начальное состояние дерева
+     * @return true если сохранение успешно, false в противном случае
      */
-    public boolean logTreeState(JsonNode treeJson) {
-        int iteration = iterationCounter.incrementAndGet();
+    public boolean saveInitialState(JsonNode treeJson) {
+        try (Jedis jedis = new Jedis(REDIS_HOST, REDIS_PORT)) {
+            jedis.auth(REDIS_PASSWORD);
 
-        // Пропускаем логирование, если не соответствует частоте
-        if (iteration % loggingFrequency != 0) {
-            return false;
-        }
+            // Создаем упрощенную копию дерева
+            ObjectNode rootOnly = mapper.createObjectNode();
+            if (treeJson.has("state")) rootOnly.put("state", treeJson.get("state").asText());
+            if (treeJson.has("statistics")) rootOnly.set("statistics", treeJson.get("statistics"));
+            rootOnly.putArray("children"); // Пустой массив детей
 
-        // Первое состояние записываем сразу
-        if (previousTree == null) {
-            try (Jedis jedis = jedisPool.getResource()) {
-                String initialJson = treeJson.toString();
-                jedis.set(KEY_PREFIX + treeId + INITIAL_SUFFIX, initialJson);
-                jedis.expire(KEY_PREFIX + treeId + INITIAL_SUFFIX, EXPIRATION_SECONDS);
-                jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "totalPatches", "0");
-            } catch (Exception e) {
-                System.err.println("Ошибка при записи начального состояния: " + e.getMessage());
-                e.printStackTrace();
+            // Конвертируем в строку и сохраняем
+            String initialJson = rootOnly.toString();
+            jedis.set(KEY_PREFIX + treeId + INITIAL_SUFFIX, initialJson);
+            jedis.expire(KEY_PREFIX + treeId + INITIAL_SUFFIX, 86400);
+
+            // Проверяем, что начальное состояние сохранилось
+            String savedJson = jedis.get(KEY_PREFIX + treeId + INITIAL_SUFFIX);
+            if (savedJson == null || savedJson.isEmpty()) {
+                System.err.println("Failed to save initial state for turn " + turnNumber +
+                        " - verification failed");
                 return false;
             }
 
-            previousTree = treeJson;
+            // Сохраняем копию для патчей
+            previousTree = treeJson.deepCopy();
+            initialSaved = true;
+
+            System.out.println("Initial state saved for turn " + turnNumber);
             return true;
-        }
-
-        // Добавляем в очередь пакетной обработки
-        JsonPatch patch = JsonDiff.asJsonPatch(previousTree, treeJson);
-// Необходимо преобразовать JsonPatch в JsonNode
-        JsonNode patchNode = mapper.valueToTree(patch);
-        batchQueue.add(new PatchEntry(iteration, patchNode));
-        previousTree = treeJson;
-
-        // Если очередь достигла размера пакета, запускаем обработку
-        if (batchQueue.size() >= batchSize && !processingBatch.getAndSet(true)) {
-            CompletableFuture.runAsync(() -> {
-                processBatch();
-                processingBatch.set(false);
-            });
-        }
-
-        return true;
-    }
-
-    /**
-     * Обработка пакета патчей для Redis
-     */
-    private void processBatch() {
-        if (batchQueue.isEmpty()) return;
-
-        try (Jedis jedis = jedisPool.getResource()) {
-            Pipeline pipeline = jedis.pipelined();
-            int count = 0;
-
-            PatchEntry entry;
-            while ((entry = batchQueue.poll()) != null && count < batchSize) {
-                String patchKey = KEY_PREFIX + treeId + PATCH_SUFFIX + entry.iteration;
-                pipeline.set(patchKey, entry.patch.toString());
-                pipeline.expire(patchKey, EXPIRATION_SECONDS);
-                count++;
-            }
-
-            // Инкрементируем счетчик патчей
-            pipeline.hincrBy(KEY_PREFIX + treeId + META_SUFFIX, "totalPatches", count);
-
-            pipeline.sync();
+        } catch (JedisException e) {
+            System.err.println("Redis error saving initial state: " + e.getMessage());
+            return false;
         } catch (Exception e) {
-            System.err.println("Ошибка при пакетной обработке: " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("Error saving initial state: " + e.getMessage());
+            return false;
         }
     }
 
     /**
-     * Возвращает ID дерева для доступа к данным
+     * Сохраняет патч изменений с текущим состоянием дерева
+     */
+    public boolean logTreeState(JsonNode treeJson) {
+        // Если начальное состояние не сохранено, сохраняем его сейчас
+        if (!initialSaved) {
+            return saveInitialState(treeJson);
+        }
+
+        try (Jedis jedis = new Jedis(REDIS_HOST, REDIS_PORT)) {
+            jedis.auth(REDIS_PASSWORD);
+
+            // Увеличиваем счетчик патчей
+            patchCounter++;
+
+            // Сохраняем сам патч (в этой упрощенной версии - всё дерево)
+            String patchKey = KEY_PREFIX + treeId + PATCH_SUFFIX + patchCounter;
+            jedis.set(patchKey, treeJson.toString());
+            jedis.expire(patchKey, 86400);
+
+            // Обновляем счетчик в метаданных
+            jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "totalPatches", String.valueOf(patchCounter));
+
+            // Обновляем предыдущее состояние
+            previousTree = treeJson.deepCopy();
+
+            return true;
+        } catch (JedisException e) {
+            System.err.println("Redis error saving patch: " + e.getMessage());
+            return false;
+        } catch (Exception e) {
+            System.err.println("Error saving patch: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Проверяет, существует ли начальное состояние в Redis
+     */
+    public boolean hasInitialState() {
+        try (Jedis jedis = new Jedis(REDIS_HOST, REDIS_PORT)) {
+            jedis.auth(REDIS_PASSWORD);
+            return jedis.exists(KEY_PREFIX + treeId + INITIAL_SUFFIX);
+        } catch (JedisException e) {
+            System.err.println("Redis error checking initial state: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Возвращает идентификатор дерева
      */
     public String getTreeId() {
         return treeId;
     }
 
-    /**
-     * Возвращает количество итераций
-     */
-    public int getIterationCount() {
-        return iterationCounter.get();
-    }
-
-    /**
-     * Закрывает соединение с Redis и сбрасывает оставшиеся данные
-     */
     @Override
     public void close() {
-        // Обрабатываем оставшиеся элементы в очереди
-        if (!batchQueue.isEmpty()) {
-            processBatch();
+        // Проверка наличия начального состояния перед закрытием
+        if (!hasInitialState() && previousTree != null) {
+            System.err.println("WARNING: Initial state missing for turn " + turnNumber +
+                    " - attempting emergency save");
+            saveInitialState(previousTree);
         }
 
-        if (jedisPool != null && !jedisPool.isClosed()) {
-            jedisPool.close();
-        }
-    }
-
-    /**
-     * Получает список всех доступных деревьев из Redis
-     */
-    public static Set<String> getAvailableTrees() {
-        try (JedisPool pool = new JedisPool(REDIS_HOST, REDIS_PORT);
-             Jedis jedis = pool.getResource()) {
-            return jedis.keys(KEY_PREFIX + "*" + META_SUFFIX);
-        }
+        System.out.println("Closing MCTSRedisLogger for turn " + turnNumber);
     }
 }
