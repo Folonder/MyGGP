@@ -1,15 +1,13 @@
 package org.ggp.base.player.gamer.statemachine.mcts.logger;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.fge.jsonpatch.diff.JsonDiff;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisException;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
 /**
- * Упрощенный логгер для записи состояний MCTS дерева в Redis
- * с надежной гарантией записи начального состояния
+ * Логгер для записи состояний MCTS дерева в Redis в формате JSON Patch
  */
 public class MCTSRedisLogger implements AutoCloseable {
     private static final String REDIS_HOST = "localhost";
@@ -65,14 +63,8 @@ public class MCTSRedisLogger implements AutoCloseable {
         try (Jedis jedis = new Jedis(REDIS_HOST, REDIS_PORT)) {
             jedis.auth(REDIS_PASSWORD);
 
-            // Создаем упрощенную копию дерева
-            ObjectNode rootOnly = mapper.createObjectNode();
-            if (treeJson.has("state")) rootOnly.put("state", treeJson.get("state").asText());
-            if (treeJson.has("statistics")) rootOnly.set("statistics", treeJson.get("statistics"));
-            rootOnly.putArray("children"); // Пустой массив детей
-
-            // Конвертируем в строку и сохраняем
-            String initialJson = rootOnly.toString();
+            // Конвертируем в строку и сохраняем полное дерево (начальное состояние)
+            String initialJson = treeJson.toString();
             jedis.set(KEY_PREFIX + treeId + INITIAL_SUFFIX, initialJson);
             jedis.expire(KEY_PREFIX + treeId + INITIAL_SUFFIX, 86400);
 
@@ -114,13 +106,30 @@ public class MCTSRedisLogger implements AutoCloseable {
             // Увеличиваем счетчик патчей
             patchCounter++;
 
-            // Сохраняем сам патч (в этой упрощенной версии - всё дерево)
-            String patchKey = KEY_PREFIX + treeId + PATCH_SUFFIX + patchCounter;
-            jedis.set(patchKey, treeJson.toString());
-            jedis.expire(patchKey, 86400);
+            // Вычисляем разницу между предыдущим и текущим состоянием в формате JSON Patch
+            JsonNode patchNode = JsonDiff.asJson(previousTree, treeJson);
 
-            // Обновляем счетчик в метаданных
-            jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "totalPatches", String.valueOf(patchCounter));
+            // Проверяем, есть ли изменения
+            if (patchNode.isArray() && patchNode.size() > 0) {
+                // Сохраняем патч
+                String patchKey = KEY_PREFIX + treeId + PATCH_SUFFIX + String.format("%06d", patchCounter);
+                jedis.set(patchKey, patchNode.toString());
+                jedis.expire(patchKey, 86400);
+
+                // Обновляем счетчик в метаданных
+                jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "totalPatches", String.valueOf(patchCounter));
+
+                // Обновляем метку времени последнего патча
+                jedis.hset(KEY_PREFIX + treeId + META_SUFFIX, "lastPatchTime", String.valueOf(System.currentTimeMillis()));
+
+                // Логируем размер патча для анализа
+                System.out.println("Patch #" + patchCounter + " saved: " + patchNode.size() + " operations, " +
+                        patchNode.toString().length() + " bytes");
+            } else {
+                System.out.println("No changes detected, skipping patch #" + patchCounter);
+                // Уменьшаем счетчик обратно, так как патч не был сохранен
+                patchCounter--;
+            }
 
             // Обновляем предыдущее состояние
             previousTree = treeJson.deepCopy();
@@ -131,6 +140,7 @@ public class MCTSRedisLogger implements AutoCloseable {
             return false;
         } catch (Exception e) {
             System.err.println("Error saving patch: " + e.getMessage());
+            e.printStackTrace();
             return false;
         }
     }
@@ -164,6 +174,6 @@ public class MCTSRedisLogger implements AutoCloseable {
             saveInitialState(previousTree);
         }
 
-        System.out.println("Closing MCTSRedisLogger for turn " + turnNumber);
+        System.out.println("Closing MCTSRedisLogger for turn " + turnNumber + ", saved " + patchCounter + " patches");
     }
 }
