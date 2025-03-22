@@ -1,10 +1,7 @@
 package org.ggp.base.player.gamer.statemachine.mcts;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeStartEvent;
-import org.ggp.base.player.gamer.statemachine.mcts.logger.MCTSRedisLogger;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTreeNode;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.CumulativeStatistics;
@@ -23,26 +20,39 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class MCTSGamer extends SampleGamer {
     private final long SAFETY_MARGIN = 2000;
-    private static final int DEFAULT_LOGGING_FREQUENCY = 1;
-    private static final boolean ENABLE_REDIS_LOGGING = true;
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    // Progressive logging configuration
+    private final boolean ENABLE_GROWTH_LOGGING = true; // Включить/выключить логирование роста
+
+    // Настройки прогрессии логирования
+    private final int[] ITERATIONS_FIRST_10 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}; // Логировать каждую из первых 10 итераций
+    private final int[] ITERATIONS_FIRST_100 = {15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100}; // Более редкие точки до 100
+    private final double PROGRESSION_FACTOR = 1.3; // Каждая следующая точка логирования в ~1.3 раза больше предыдущей
+    private final int MAX_LOG_INTERVAL = 5000; // Максимальный интервал между логами
+    private final int MAX_LOG_POINTS = 100; // Максимальное число точек логирования для одного хода
+
     private SearchTree tree = null;
     private int turnCount = 0;
-    private String currentTreeId = null;
+    private int growthLogCount = 0;
+
+    // Множество для хранения итераций, которые нужно логировать
+    private Set<Integer> iterationsToLog = new HashSet<>();
 
     @Override
-    public void stateMachineMetaGame(long timeout)
+    public void stateMachineMetaGame(long xiTimeout)
             throws TransitionDefinitionException, MoveDefinitionException,
             GoalDefinitionException {
         tree = new SearchTree(getStateMachine());
         turnCount = 0;
-        // Добавляем наблюдателя дерева из первой версии файла
+        growthLogCount = 0;
         this.addObserver(new TreeObserver());
         notifyObservers(new TreeStartEvent());
     }
@@ -50,136 +60,143 @@ public class MCTSGamer extends SampleGamer {
     @Override
     public void stateMachineStop() {
         super.stateMachineStop();
-        // Можно раскомментировать, если нужно записывать dot-файлы при остановке
-        // this.writeLogInfoToDotFile();
+        // Логировать финальное состояние дерева
+        notifyObservers(new TreeEvent(tree, turnCount, false, true));
     }
 
     @Override
     public void stateMachineAbort() {
         super.stateMachineAbort();
-        // Можно раскомментировать, если нужно записывать dot-файлы при прерывании
-        // this.writeLogInfoToDotFile();
+        // Логировать финальное состояние дерева при прерывании
+        notifyObservers(new TreeEvent(tree, turnCount, false, true));
     }
 
-    @Override
-    public Move stateMachineSelectMove(long timeout)
-            throws TransitionDefinitionException, MoveDefinitionException,
-            GoalDefinitionException {
-        // Find node for current state and make it the root
-        SearchTreeNode startRootNode = tree.findNode(getCurrentState());
-        tree.cut(startRootNode);
+    /**
+     * Генерирует набор номеров итераций для логирования с использованием прогрессивной схемы
+     * @param estimatedTotalIterations Ожидаемое общее число итераций
+     */
+    private void generateProgressiveLoggingPoints(int estimatedTotalIterations) {
+        iterationsToLog.clear();
 
-        // Initialize Redis logger
-        MCTSRedisLogger redisLogger = null;
-        try {
-            if (ENABLE_REDIS_LOGGING) {
-                // Создаем логгер
-                redisLogger = new MCTSRedisLogger(
-                        getMatch().getMatchId(),
-                        turnCount
-                );
-                currentTreeId = redisLogger.getTreeId();
+        // Всегда логировать итерацию 0 (начальное состояние)
+        iterationsToLog.add(0);
 
-                // Сохраняем начальное состояние с проверкой
-                JsonNode initialTree = tree.toJSONbyJackson();
-                boolean saved = redisLogger.saveInitialState(initialTree);
-                if (!saved) {
-                    System.err.println("ERROR: Failed to save initial state for turn " + turnCount);
-
-                    // Повторные попытки сохранения
-                    for (int attempt = 1; attempt <= 3; attempt++) {
-                        System.out.println("Retry #" + attempt + " to save initial state");
-                        saved = redisLogger.saveInitialState(initialTree);
-                        if (saved) {
-                            System.out.println("Initial state saved successfully on retry #" + attempt);
-                            break;
-                        }
-                    }
-
-                    if (!saved) {
-                        System.err.println("All retries failed for turn " + turnCount);
-                    }
-                }
-
-                // Дополнительная проверка после сохранения
-                if (!redisLogger.hasInitialState()) {
-                    System.err.println("Initial state verification failed for turn " + turnCount);
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("Error initializing Redis logger: " + e.getMessage());
-            e.printStackTrace();
+        // Добавить все ранние итерации (1-10)
+        for (int early : ITERATIONS_FIRST_10) {
+            iterationsToLog.add(early);
         }
 
-        // Посылаем уведомление о начале хода (из первого файла)
-        notifyObservers(new TreeEvent(tree, turnCount, true));
+        // Добавить промежуточные итерации (до 100)
+        for (int mid : ITERATIONS_FIRST_100) {
+            iterationsToLog.add(mid);
+        }
 
-        long finishBy = timeout - SAFETY_MARGIN;
+        // Генерировать прогрессивные точки логирования
+        double nextPoint = 100; // Начинаем от 100
+        List<Integer> generatedPoints = new ArrayList<>();
+
+        while (nextPoint < estimatedTotalIterations) {
+            nextPoint = Math.ceil(nextPoint * PROGRESSION_FACTOR);
+
+            // Обеспечить, чтобы не превышался максимальный интервал
+            int lastPoint = iterationsToLog.stream().mapToInt(i -> i).max().orElse(0);
+            if (nextPoint - lastPoint > MAX_LOG_INTERVAL) {
+                nextPoint = lastPoint + MAX_LOG_INTERVAL;
+            }
+
+            generatedPoints.add((int)nextPoint);
+
+            // Проверка безопасности - если мы приближаемся к очень большим числам, остановиться
+            if (nextPoint > Integer.MAX_VALUE / 2) break;
+
+            // Если сгенерировали слишком много точек, остановиться
+            if (generatedPoints.size() >= MAX_LOG_POINTS -
+                    ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1) { // -1 для итерации 0
+                break;
+            }
+        }
+
+        // Если у нас слишком много точек, отфильтровать их равномерно
+        if (generatedPoints.size() > MAX_LOG_POINTS - ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1) {
+            // Выбрать подмножество точек равномерно
+            int available = MAX_LOG_POINTS - ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1;
+            int step = generatedPoints.size() / available;
+
+            for (int i = 0; i < generatedPoints.size(); i += step) {
+                if (i < generatedPoints.size()) {
+                    iterationsToLog.add(generatedPoints.get(i));
+                }
+            }
+
+            // Всегда добавлять последнюю точку
+            if (!generatedPoints.isEmpty()) {
+                iterationsToLog.add(generatedPoints.get(generatedPoints.size() - 1));
+            }
+        } else {
+            // Если точек немного, добавить их все
+            iterationsToLog.addAll(generatedPoints);
+        }
+
+        // Также добавить примерно предполагаемую последнюю итерацию
+        iterationsToLog.add(estimatedTotalIterations);
+
+        // Сортировка и вывод для отладки
+        Integer[] logPoints = iterationsToLog.toArray(new Integer[0]);
+        Arrays.sort(logPoints);
+        System.out.println("Сгенерировано " + logPoints.length + " точек логирования: " + Arrays.toString(logPoints));
+    }
+
+    public Move stateMachineSelectMove(long xiTimeout) throws TransitionDefinitionException, MoveDefinitionException, GoalDefinitionException {
+        long start = System.currentTimeMillis();
+
+        SearchTreeNode startRootNode = tree.findNode(getCurrentState());
+        // Perform tree cutting
+        tree.cut(startRootNode);
+
+        long finishBy = xiTimeout - SAFETY_MARGIN;
+        long availableTime = finishBy - start;
+
+        // Грубо оценить количество итераций, которые мы сможем выполнить
+        // на основе предыдущего опыта (~20000 итераций в секунду)
+        int estimatedIterations = (int)(availableTime * 20000 / 1000);
+        System.out.println("Ожидаемое количество итераций: " + estimatedIterations);
+
+        // Генерировать прогрессивные точки логирования
+        generateProgressiveLoggingPoints(estimatedIterations);
+
         int iterations = 0;
+        growthLogCount = 0;
+
+        // Логировать начальное состояние дерева (итерация 0) до любого роста
+        if (ENABLE_GROWTH_LOGGING) {
+            logTreeGrowth(0);
+            notifyObservers(new TreeEvent(tree, turnCount, true, false));
+        }
 
         while (System.currentTimeMillis() < finishBy) {
             iterations++;
             tree.grow();
 
-            // Логируем изменения каждые X итераций
-            if (ENABLE_REDIS_LOGGING && redisLogger != null && iterations % DEFAULT_LOGGING_FREQUENCY == 0) {
-                try {
-                    JsonNode currentTree = tree.toJSONbyJackson();
-                    redisLogger.logTreeState(currentTree);
-                } catch (Exception e) {
-                    System.err.println("Error logging tree state: " + e.getMessage());
+            // Логировать рост дерева по прогрессивной схеме
+            if (ENABLE_GROWTH_LOGGING && iterationsToLog.contains(iterations)) {
+                growthLogCount++;
+                // Логировать текущее состояние дерева
+                logTreeGrowth(iterations);
+
+                // Уведомить наблюдателей о росте дерева
+                notifyObservers(new TreeEvent(tree, turnCount, true, false));
+
+                // Каждые 10 логов, выводить прогресс
+                if (growthLogCount % 10 == 0) {
+                    System.out.println("Прогресс: залогировано " + growthLogCount + " состояний, итерация " + iterations);
                 }
             }
         }
 
-        // Select best move
+        System.out.println("Завершено " + iterations + " итераций, залогировано " + growthLogCount + " состояний дерева");
         Move bestMove = tree.getBestAction(getRole());
 
-        // Логируем финальное состояние
-        if (ENABLE_REDIS_LOGGING && redisLogger != null) {
-            try {
-                JsonNode finalTree = tree.toJSONbyJackson();
-                redisLogger.logTreeState(finalTree);
-            } catch (Exception e) {
-                System.err.println("Error logging final tree state: " + e.getMessage());
-            }
-        }
-
-        // Сохраняем полное дерево в JSON-файл (из первого файла)
-        saveTreeToJsonFile();
-
-        // Сохраняем ID дерева для связи с Redis
-        saveTreeIdToFile();
-
-        // Посылаем уведомление о завершении хода (из первого файла)
-        notifyObservers(new TreeEvent(tree, turnCount, false));
-
-        // Финальная проверка и закрытие логгера
-        if (redisLogger != null) {
-            try {
-                if (!redisLogger.hasInitialState()) {
-                    System.err.println("CRITICAL: Initial state missing before closing for turn " + turnCount);
-
-                    // Последняя попытка сохранения
-                    JsonNode finalState = tree.toJSONbyJackson();
-                    boolean saved = redisLogger.saveInitialState(finalState);
-                    if (saved) {
-                        System.out.println("Initial state saved in emergency mode for turn " + turnCount);
-                    }
-                }
-
-                redisLogger.close();
-            } catch (Exception e) {
-                System.err.println("Error closing Redis logger: " + e.getMessage());
-            }
-        }
-
-        turnCount++;
-        return bestMove;
-    }
-
-    // Метод для сохранения дерева в JSON-файл (из первого файла)
-    private void saveTreeToJsonFile() {
+        // Сохранить JSON-файл для этого матча
         String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
         File f = new File(filePath);
         if (f.exists()) f.delete();
@@ -192,30 +209,40 @@ public class MCTSGamer extends SampleGamer {
             bw.flush();
             bw.close();
         } catch (IOException e) {
-            System.err.println("Error saving tree to JSON file: " + e.getMessage());
+            throw new RuntimeException(e);
         }
+
+        // Уведомить наблюдателей после завершения выбора хода с финальным деревом
+        notifyObservers(new TreeEvent(tree, turnCount, false, true));
+        turnCount++;
+
+        return bestMove;
     }
 
-    private void saveTreeIdToFile() {
-        if (currentTreeId == null) return;
+    /**
+     * Логирует рост дерева в файл во время выполнения алгоритма MCTS
+     * @param iterations Текущее количество итераций
+     */
+    private void logTreeGrowth(int iterations) {
+        String growthLogPath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString()
+                + "/growth_" + turnCount + "_iter" + iterations + ".json";
+        File growthFile = new File(growthLogPath);
 
         try {
-            String dirPath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString();
-            File dir = new File(dirPath);
-            if (!dir.exists()) {
-                dir.mkdirs();
-            }
+            growthFile.getParentFile().mkdirs();
+            if (growthFile.exists()) growthFile.delete();
+            growthFile.createNewFile();
 
-            File treeIdFile = new File(dirPath + "/tree_id.txt");
-            FileWriter writer = new FileWriter(treeIdFile);
-            writer.write(currentTreeId);
+            BufferedWriter writer = new BufferedWriter(new FileWriter(growthFile));
+            writer.write(tree.toJSONbyJackson().toString());
+            writer.flush();
             writer.close();
         } catch (IOException e) {
-            System.err.println("Error saving tree ID: " + e.getMessage());
+            // Логировать ошибку, но не останавливать алгоритм
+            System.err.println("Ошибка при логировании роста дерева: " + e.getMessage());
         }
     }
 
-    // Метод создания лог-дерева из первого файла
     @Override
     public LogInfoNode createLogInfoTree(Move selectedMove) {
         MachineState selectedNextState = null;
@@ -228,7 +255,6 @@ public class MCTSGamer extends SampleGamer {
         return makeLogTreeFromSearchTree(this.tree.getRoot(), selectedNextState);
     }
 
-    // Вспомогательный метод для создания лог-дерева из первого файла
     public LogInfoNode makeLogTreeFromSearchTree(SearchTreeNode node, MachineState selectedNextState) {
         LogInfoNode result = this.createLogInfoNode(node.getState());
 
