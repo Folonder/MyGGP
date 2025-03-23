@@ -15,10 +15,6 @@ import org.ggp.base.util.statemachine.exceptions.GoalDefinitionException;
 import org.ggp.base.util.statemachine.exceptions.MoveDefinitionException;
 import org.ggp.base.util.statemachine.exceptions.TransitionDefinitionException;
 
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -30,20 +26,24 @@ public class MCTSGamer extends SampleGamer {
     private final long SAFETY_MARGIN = 2000;
 
     // Progressive logging configuration
-    private final boolean ENABLE_GROWTH_LOGGING = true; // Включить/выключить логирование роста
+    private final boolean ENABLE_GROWTH_LOGGING = true;
 
-    // Настройки прогрессии логирования
-    private final int[] ITERATIONS_FIRST_10 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}; // Логировать каждую из первых 10 итераций
-    private final int[] ITERATIONS_FIRST_100 = {15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100}; // Более редкие точки до 100
-    private final double PROGRESSION_FACTOR = 1.3; // Каждая следующая точка логирования в ~1.3 раза больше предыдущей
-    private final int MAX_LOG_INTERVAL = 5000; // Максимальный интервал между логами
-    private final int MAX_LOG_POINTS = 100; // Максимальное число точек логирования для одного хода
+    // Logging progression settings
+    private final int[] ITERATIONS_FIRST_10 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    private final int[] ITERATIONS_FIRST_100 = {15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100};
+    private final double PROGRESSION_FACTOR = 1.3;
+    private final int MAX_LOG_INTERVAL = 5000;
+    private final int MAX_LOG_POINTS = 100;
 
     private SearchTree tree = null;
     private int turnCount = 0;
     private int growthLogCount = 0;
+    private String sessionIdentifier;
 
-    // Множество для хранения итераций, которые нужно логировать
+    // Observer for tree events
+    private TreeObserver treeObserver;
+
+    // Set for storing iterations to log
     private Set<Integer> iterationsToLog = new HashSet<>();
 
     @Override
@@ -53,52 +53,68 @@ public class MCTSGamer extends SampleGamer {
         tree = new SearchTree(getStateMachine());
         turnCount = 0;
         growthLogCount = 0;
-        this.addObserver(new TreeObserver());
+
+        // Create a unique session identifier in the format "yyyyMMdd_HHmmss_UUID"
+        java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
+        sessionIdentifier = formatter.format(new java.util.Date()) + "_" +
+                Math.abs(java.util.UUID.randomUUID().getMostSignificantBits());
+
+        System.out.println("Created session ID: " + sessionIdentifier);
+
+        // Add observer for tree events - this handles Redis storage
+        treeObserver = new TreeObserver(sessionIdentifier);
+        this.addObserver(treeObserver);
         notifyObservers(new TreeStartEvent());
     }
 
     @Override
     public void stateMachineStop() {
         super.stateMachineStop();
-        // Логировать финальное состояние дерева
-        notifyObservers(new TreeEvent(tree, turnCount, false, true));
+        // Log final state of the tree with game over flag
+        notifyObservers(new TreeEvent(tree, turnCount, false, true, true));
+
+        // Clean up
+        treeObserver.shutdown();
     }
 
     @Override
     public void stateMachineAbort() {
         super.stateMachineAbort();
-        // Логировать финальное состояние дерева при прерывании
-        notifyObservers(new TreeEvent(tree, turnCount, false, true));
+        // Log final state of the tree on abort with game over flag
+        notifyObservers(new TreeEvent(tree, turnCount, false, true, true));
+
+        // Clean up
+        treeObserver.shutdown();
     }
 
     /**
-     * Генерирует набор номеров итераций для логирования с использованием прогрессивной схемы
-     * @param estimatedTotalIterations Ожидаемое общее число итераций
+     * Generate set of iteration numbers to log using a progressive scheme
+     * @param estimatedTotalIterations Estimated total number of iterations
      */
     private void generateProgressiveLoggingPoints(int estimatedTotalIterations) {
         iterationsToLog.clear();
 
-        // Всегда логировать итерацию 0 (начальное состояние)
+        // Always log iteration 0 (initial state)
         iterationsToLog.add(0);
 
-        // Добавить все ранние итерации (1-10)
+        // Add all early iterations (1-10)
         for (int early : ITERATIONS_FIRST_10) {
             iterationsToLog.add(early);
         }
 
-        // Добавить промежуточные итерации (до 100)
+        // Add intermediate iterations (up to 100)
         for (int mid : ITERATIONS_FIRST_100) {
             iterationsToLog.add(mid);
         }
 
-        // Генерировать прогрессивные точки логирования
-        double nextPoint = 100; // Начинаем от 100
+        // Generate progressive logging points
+        double nextPoint = 100; // Start from 100
         List<Integer> generatedPoints = new ArrayList<>();
 
         while (nextPoint < estimatedTotalIterations) {
             nextPoint = Math.ceil(nextPoint * PROGRESSION_FACTOR);
 
-            // Обеспечить, чтобы не превышался максимальный интервал
+            // Ensure maximum interval is not exceeded
             int lastPoint = iterationsToLog.stream().mapToInt(i -> i).max().orElse(0);
             if (nextPoint - lastPoint > MAX_LOG_INTERVAL) {
                 nextPoint = lastPoint + MAX_LOG_INTERVAL;
@@ -106,19 +122,19 @@ public class MCTSGamer extends SampleGamer {
 
             generatedPoints.add((int)nextPoint);
 
-            // Проверка безопасности - если мы приближаемся к очень большим числам, остановиться
+            // Safety check - if approaching very large numbers, stop
             if (nextPoint > Integer.MAX_VALUE / 2) break;
 
-            // Если сгенерировали слишком много точек, остановиться
+            // If generated too many points, stop
             if (generatedPoints.size() >= MAX_LOG_POINTS -
-                    ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1) { // -1 для итерации 0
+                    ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1) { // -1 for iteration 0
                 break;
             }
         }
 
-        // Если у нас слишком много точек, отфильтровать их равномерно
+        // If too many points, filter them evenly
         if (generatedPoints.size() > MAX_LOG_POINTS - ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1) {
-            // Выбрать подмножество точек равномерно
+            // Select subset of points evenly
             int available = MAX_LOG_POINTS - ITERATIONS_FIRST_10.length - ITERATIONS_FIRST_100.length - 1;
             int step = generatedPoints.size() / available;
 
@@ -128,22 +144,22 @@ public class MCTSGamer extends SampleGamer {
                 }
             }
 
-            // Всегда добавлять последнюю точку
+            // Always add the last point
             if (!generatedPoints.isEmpty()) {
                 iterationsToLog.add(generatedPoints.get(generatedPoints.size() - 1));
             }
         } else {
-            // Если точек немного, добавить их все
+            // If not too many points, add them all
             iterationsToLog.addAll(generatedPoints);
         }
 
-        // Также добавить примерно предполагаемую последнюю итерацию
+        // Also add approximately estimated last iteration
         iterationsToLog.add(estimatedTotalIterations);
 
-        // Сортировка и вывод для отладки
+        // Sort and output for debugging
         Integer[] logPoints = iterationsToLog.toArray(new Integer[0]);
         Arrays.sort(logPoints);
-        System.out.println("Сгенерировано " + logPoints.length + " точек логирования: " + Arrays.toString(logPoints));
+        System.out.println("Generated " + logPoints.length + " logging points: " + Arrays.toString(logPoints));
     }
 
     public Move stateMachineSelectMove(long xiTimeout) throws TransitionDefinitionException, MoveDefinitionException, GoalDefinitionException {
@@ -156,20 +172,19 @@ public class MCTSGamer extends SampleGamer {
         long finishBy = xiTimeout - SAFETY_MARGIN;
         long availableTime = finishBy - start;
 
-        // Грубо оценить количество итераций, которые мы сможем выполнить
-        // на основе предыдущего опыта (~20000 итераций в секунду)
+        // Roughly estimate number of iterations we can perform
+        // based on previous experience (~20000 iterations per second)
         int estimatedIterations = (int)(availableTime * 20000 / 1000);
-        System.out.println("Ожидаемое количество итераций: " + estimatedIterations);
+        System.out.println("Estimated iterations: " + estimatedIterations);
 
-        // Генерировать прогрессивные точки логирования
+        // Generate progressive logging points
         generateProgressiveLoggingPoints(estimatedIterations);
 
         int iterations = 0;
         growthLogCount = 0;
 
-        // Логировать начальное состояние дерева (итерация 0) до любого роста
+        // Log initial tree state (iteration 0) before any growth
         if (ENABLE_GROWTH_LOGGING) {
-            logTreeGrowth(0);
             notifyObservers(new TreeEvent(tree, turnCount, true, false));
         }
 
@@ -177,70 +192,28 @@ public class MCTSGamer extends SampleGamer {
             iterations++;
             tree.grow();
 
-            // Логировать рост дерева по прогрессивной схеме
+            // Log tree growth according to progressive scheme
             if (ENABLE_GROWTH_LOGGING && iterationsToLog.contains(iterations)) {
                 growthLogCount++;
-                // Логировать текущее состояние дерева
-                logTreeGrowth(iterations);
 
-                // Уведомить наблюдателей о росте дерева
+                // Notify observers about tree growth
                 notifyObservers(new TreeEvent(tree, turnCount, true, false));
 
-                // Каждые 10 логов, выводить прогресс
+                // Every 10 logs, output progress
                 if (growthLogCount % 10 == 0) {
-                    System.out.println("Прогресс: залогировано " + growthLogCount + " состояний, итерация " + iterations);
+                    System.out.println("Progress: logged " + growthLogCount + " states, iteration " + iterations);
                 }
             }
         }
 
-        System.out.println("Завершено " + iterations + " итераций, залогировано " + growthLogCount + " состояний дерева");
+        System.out.println("Completed " + iterations + " iterations, logged " + growthLogCount + " tree states");
         Move bestMove = tree.getBestAction(getRole());
 
-        // Сохранить JSON-файл для этого матча
-        String filePath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString() + "/step_" + turnCount + ".json";
-        File f = new File(filePath);
-        if (f.exists()) f.delete();
-        BufferedWriter bw = null;
-        try {
-            f.getParentFile().mkdirs();
-            f.createNewFile();
-            bw = new BufferedWriter(new FileWriter(f));
-            bw.write(tree.toJSONbyJackson().toString());
-            bw.flush();
-            bw.close();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        // Уведомить наблюдателей после завершения выбора хода с финальным деревом
+        // Notify observers after completing move selection with final tree
         notifyObservers(new TreeEvent(tree, turnCount, false, true));
         turnCount++;
 
         return bestMove;
-    }
-
-    /**
-     * Логирует рост дерева в файл во время выполнения алгоритма MCTS
-     * @param iterations Текущее количество итераций
-     */
-    private void logTreeGrowth(int iterations) {
-        String growthLogPath = getMatchFolderString() + "/" + this.getName() + "__" + this.getRoleName().toString()
-                + "/growth_" + turnCount + "_iter" + iterations + ".json";
-        File growthFile = new File(growthLogPath);
-
-        try {
-            growthFile.getParentFile().mkdirs();
-            if (growthFile.exists()) growthFile.delete();
-            growthFile.createNewFile();
-
-            BufferedWriter writer = new BufferedWriter(new FileWriter(growthFile));
-            writer.write(tree.toJSONbyJackson().toString());
-            writer.flush();
-            writer.close();
-        } catch (IOException e) {
-            // Логировать ошибку, но не останавливать алгоритм
-            System.err.println("Ошибка при логировании роста дерева: " + e.getMessage());
-        }
     }
 
     @Override

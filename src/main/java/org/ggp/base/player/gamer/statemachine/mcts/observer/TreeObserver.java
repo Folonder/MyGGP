@@ -8,23 +8,61 @@ import org.ggp.base.util.observer.Event;
 import org.ggp.base.util.observer.Observer;
 import org.ggp.base.util.statemachine.MachineState;
 
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
+
 import java.lang.reflect.Type;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 
 public class TreeObserver implements Observer {
 
-    private final Gson gson = new GsonBuilder()
-            .setPrettyPrinting()
-            .registerTypeAdapter(MachineState.class, new MachineStateSerializer())
-            .create();
-    private String folder;
+    private final Gson gson;
+
+    private String sessionIdentifier;
     private int growthLogCounter = 0;
     private boolean loggingEnabled = true;
+
+    // Redis connection configuration
+    private final JedisPool jedisPool;
+    private final String redisHost = "localhost";
+    private final int redisPort = 5003;
+    private final String redisPassword = "password";
+
+    /**
+     * Create a TreeObserver with a generated session ID
+     */
+    public TreeObserver() {
+        this(null);
+    }
+
+    /**
+     * Create a TreeObserver with a specified session ID
+     * @param sessionId The session ID to use
+     */
+    public TreeObserver(String sessionId) {
+        // Initialize redis connection pool
+        JedisPoolConfig poolConfig = new JedisPoolConfig();
+        poolConfig.setMaxTotal(10);
+        poolConfig.setMaxIdle(5);
+        poolConfig.setMinIdle(1);
+        jedisPool = new JedisPool(poolConfig, redisHost, redisPort, 2000, redisPassword);
+
+        // Configure gson for pretty printing
+        gson = new GsonBuilder()
+                .setPrettyPrinting()
+                .registerTypeAdapter(MachineState.class, new MachineStateSerializer())
+                .create();
+
+        this.sessionIdentifier = sessionId;
+
+        // Test Redis connection
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.ping();
+            System.out.println("Successfully connected to Redis");
+        } catch (Exception e) {
+            System.err.println("Failed to connect to Redis: " + e.getMessage());
+        }
+    }
 
     @Override
     public void observe(Event event) {
@@ -32,51 +70,66 @@ public class TreeObserver implements Observer {
 
         try {
             if (event instanceof TreeStartEvent) {
-                // Create a folder for the trees with timestamp for uniqueness
-                folder = "all_trees/trees_" + new SimpleDateFormat("dd_MM_yyyy_HH_mm_ss").format(new Date());
-                File f = new File(folder);
-                f.mkdirs();
+                // If the session ID wasn't passed in the constructor, generate it now
+                if (sessionIdentifier == null) {
+                    // Generate a unique session identifier with timestamp and random component
+                    java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
+                    sessionIdentifier = formatter.format(new java.util.Date()) + "_" +
+                            Math.abs(java.util.UUID.randomUUID().getMostSignificantBits());
+                }
 
                 // Reset counters
                 growthLogCounter = 0;
-                System.out.println("Tree logging initialized. Output directory: " + folder);
+                System.out.println("Tree logging initialized with Redis. Session ID: " + sessionIdentifier);
             } else if (event instanceof TreeEvent) {
                 TreeEvent treeEvent = ((TreeEvent) event);
 
-                // Format the filename with padded numbers for proper sorting
-                String fileName;
+                // Create Redis key
+                String redisKey;
 
                 if (treeEvent.isGrowthEvent()) {
-                    // Extract iteration count from event if available, or use counter
-                    // Format: tree_001_growth_00000.json (for turn 1, growth log 0)
+                    // Format for growth events
                     String growthLogId = String.format("%05d", growthLogCounter++);
                     String turnId = String.format("%03d", treeEvent.getTurnNumber());
-                    fileName = folder + "/tree_" + turnId + "_growth_" + growthLogId + ".json";
+                    redisKey = String.format("mcts:%s:%s:growth_%s",
+                            sessionIdentifier,
+                            turnId,
+                            growthLogId);
                 } else if (treeEvent.isFinalTree()) {
-                    // This is the final tree after a move
+                    // Final tree state after a move
                     String turnId = String.format("%03d", treeEvent.getTurnNumber());
-                    fileName = folder + "/tree_" + turnId + "_FINAL.json";
+
+                    // Only store the final tree if we haven't already stored a final tree for this turn
+                    // This happens when the game is over (stateMachineStop/Abort is called)
+                    if (treeEvent.isGameOver()) {
+                        // For the game-over final state (after the last move)
+                        redisKey = String.format("mcts:%s:gameover", sessionIdentifier);
+                    } else {
+                        redisKey = String.format("mcts:%s:%s:final",
+                                sessionIdentifier,
+                                turnId);
+                    }
 
                     // Reset growth counter for next turn
                     growthLogCounter = 0;
                     System.out.println("Completed logging for turn " + treeEvent.getTurnNumber());
                 } else {
-                    // Fallback for legacy events
+                    // For the initial tree
                     String turnId = String.format("%03d", treeEvent.getTurnNumber());
-                    fileName = folder + "/tree_" + turnId +
-                            (treeEvent.getOnStartMove() ? "_BEGIN" : "_END") + ".json";
+                    redisKey = String.format("mcts:%s:%s:init",
+                            sessionIdentifier,
+                            turnId);
                 }
 
-                // Write the tree to file
-                File f = new File(fileName);
-                f.createNewFile();
-                BufferedWriter bw = new BufferedWriter(new FileWriter(f));
-                bw.write(gson.toJson(treeEvent.getTree()));
-                bw.flush();
-                bw.close();
+                // Store the tree in Redis
+                try (Jedis jedis = jedisPool.getResource()) {
+                    String jsonTree = gson.toJson(treeEvent.getTree());
+                    jedis.set(redisKey, jsonTree);
+                    System.out.println("Stored tree in Redis with key: " + redisKey);
+                }
             }
-        } catch (IOException e) {
-            System.err.println("Error writing tree log: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("Error writing to Redis: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -87,6 +140,15 @@ public class TreeObserver implements Observer {
      */
     public void setLoggingEnabled(boolean enabled) {
         this.loggingEnabled = enabled;
+    }
+
+    /**
+     * Clean up resources
+     */
+    public void shutdown() {
+        if (jedisPool != null && !jedisPool.isClosed()) {
+            jedisPool.close();
+        }
     }
 
     static class MachineStateSerializer implements JsonSerializer<MachineState> {
