@@ -72,9 +72,11 @@ public class TreeObserver implements Observer {
             if (event instanceof TreeStartEvent) {
                 // If the session ID wasn't passed in the constructor, generate it now
                 if (sessionIdentifier == null) {
-                    // Generate a unique session identifier with timestamp and random component
+                    // Try to get game name, default to "unknown" if not available
+                    String gameName = "unknown";
+                    // Generate a unique session identifier with game name
                     java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
-                    sessionIdentifier = formatter.format(new java.util.Date()) + "_" +
+                    sessionIdentifier = gameName + "_" + formatter.format(new java.util.Date()) + "_" +
                             Math.abs(java.util.UUID.randomUUID().getMostSignificantBits());
                 }
 

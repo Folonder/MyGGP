@@ -54,17 +54,90 @@ public class MCTSGamer extends SampleGamer {
         turnCount = 0;
         growthLogCount = 0;
 
-        // Create a unique session identifier in the format "yyyyMMdd_HHmmss_UUID"
+        // Определяем имя игры несколькими способами
+        String gameName = determineGameName();
+
         java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
-        sessionIdentifier = formatter.format(new java.util.Date()) + "_" +
+        sessionIdentifier = gameName + "_" + formatter.format(new java.util.Date()) + "_" +
                 Math.abs(java.util.UUID.randomUUID().getMostSignificantBits());
 
-        System.out.println("Created session ID: " + sessionIdentifier);
+        System.out.println("Created session ID with game '" + gameName + "': " + sessionIdentifier);
 
         // Add observer for tree events - this handles Redis storage
         treeObserver = new TreeObserver(sessionIdentifier);
         this.addObserver(treeObserver);
         notifyObservers(new TreeStartEvent());
+    }
+
+    /**
+     * Определяет имя игры используя несколько методов
+     * @return Имя игры или "unknown" если не удалось определить
+     */
+    private String determineGameName() {
+        // Метод 1: Непосредственно получить ключ игры из Game
+        try {
+            if (getMatch() != null && getMatch().getGame() != null) {
+                // Этот метод должен вернуть ключ игры, переданный в GameServerRunner
+                String gameKey = getMatch().getGame().getKey();
+                if (gameKey != null && !gameKey.isEmpty() && !gameKey.equals("null")) {
+                    return gameKey;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error getting game key: " + e.getMessage());
+        }
+
+        // Метод 2: Получить имя из Match
+        try {
+            if (getMatch() != null) {
+                String matchId = getMatch().getMatchId();
+                if (matchId != null && !matchId.isEmpty()) {
+                    // Формат matchId обычно: tourneyName.gameKey.timestamp
+                    String[] parts = matchId.split("\\.");
+                    if (parts.length > 1) {
+                        return parts[1]; // gameKey должен быть вторым элементом
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error extracting game name from match ID: " + e.getMessage());
+        }
+
+        // Запасные методы, если вышеуказанные не сработают
+
+        // Метод 3: Получить имя из статмашины
+        try {
+            String machineName = getStateMachine().getName();
+            if (machineName != null && !machineName.isEmpty() && !machineName.equals("StateMachine")) {
+                return machineName;
+            }
+        } catch (Exception e) {
+            System.err.println("Error getting machine name: " + e.getMessage());
+        }
+
+        // Метод 4: Проверить наше имя роли
+        try {
+            String roleName = getRoleName().toString();
+            if (roleName != null && !roleName.isEmpty()) {
+                return roleName;
+            }
+        } catch (Exception e) {
+            System.err.println("Error getting role name: " + e.getMessage());
+        }
+
+        // Метод 5: Получить имя из класса статмашины
+        try {
+            String machineClassName = getStateMachine().getClass().getSimpleName();
+            if (machineClassName != null && !machineClassName.isEmpty() &&
+                    !machineClassName.equals("StateMachine") &&
+                    !machineClassName.equals("ProverStateMachine")) {
+                return machineClassName;
+            }
+        } catch (Exception e) {
+            System.err.println("Error getting state machine class name: " + e.getMessage());
+        }
+
+        return "unknown";
     }
 
     @Override
