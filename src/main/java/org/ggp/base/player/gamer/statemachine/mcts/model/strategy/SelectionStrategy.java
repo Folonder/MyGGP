@@ -16,17 +16,60 @@ public class SelectionStrategy {
     private static final double EXPLORATION_BIAS = 0.4;
     private static final double FIRST_PLAY_URGENCY = 10;
 
+    /**
+     * Выполняет выбор узла дерева
+     */
     public static SearchTreeNode execute(SearchTreeNode node) {
-
         if (node.isLeaf()) {
             return node;
-
         } else {
             JointActions jointBestActions = getJointBestActions(node);
             SearchTreeNode selectedChild = node.getChild(jointBestActions);
 
             // Продвигаемся в глубину
             return execute(selectedChild);
+        }
+    }
+
+    /**
+     * Performs node selection with path tracking
+     *
+     * @param node Current node
+     * @param path List to store selection path
+     * @return Selected node
+     */
+    public SearchTreeNode executeWithPath(SearchTreeNode node, List<SearchTreeNode> path) {
+        try {
+            System.out.println("Selection: processing node " + (node != null ? node.getState().toString().substring(0, 20) + "..." : "null"));
+
+            if (node == null) {
+                System.err.println("ERROR: Node is null in executeWithPath!");
+                return null;
+            }
+
+            if (node.isLeaf()) {
+                System.out.println("Selection: found leaf node");
+                return node;
+            } else {
+                JointActions jointBestActions = getJointBestActions(node);
+                SearchTreeNode selectedChild = node.getChild(jointBestActions);
+
+                if (selectedChild == null) {
+                    System.err.println("ERROR: Selected child node is null!");
+                    return node;
+                }
+
+                // Add node to path
+                path.add(selectedChild);
+                System.out.println("Selection: added node to path, current path length: " + path.size());
+
+                // Proceed deeper
+                return executeWithPath(selectedChild, path);
+            }
+        } catch (Exception e) {
+            System.err.println("ERROR in executeWithPath: " + e.getMessage());
+            e.printStackTrace();
+            return node;
         }
     }
 
@@ -48,7 +91,7 @@ public class SelectionStrategy {
         for (Move action : statistics.getUsedActions(role)) {
 
             double actionScore = getExplorationScore(statistics, role, action) +
-                                        getExploitationScore(statistics, role, action);
+                    getExploitationScore(statistics, role, action);
 
             if (actionScore > bestActionScore) {
                 bestActionScore = actionScore;

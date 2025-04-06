@@ -58,7 +58,13 @@ public class JointActions {
         }
     }
 
-    ArrayNode toJSONbyJackson(ObjectMapper mapper) {
+    // Создаем публичный метод для получения JSON представления
+    public ArrayNode toJSON() {
+        return toJSONbyJackson(new ObjectMapper());
+    }
+
+    // Делаем метод публичным для использования в других классах
+    public ArrayNode toJSONbyJackson(ObjectMapper mapper) {
         ArrayNode actionsJSON = mapper.createArrayNode();
         for(Role r : getRoles()) {
             ObjectNode actionJSON = mapper.createObjectNode();

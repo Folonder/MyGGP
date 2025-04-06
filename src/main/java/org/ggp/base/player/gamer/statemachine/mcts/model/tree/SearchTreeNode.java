@@ -113,7 +113,13 @@ public class SearchTreeNode {
         return treeOwner.getStrategies().getSelectionStrategyForMatch().execute(this, choosingRole);
     }
 
-    ObjectNode toJSONbyJackson(ObjectMapper mapper) {
+    // Добавляем публичную версию метода для получения JSON представления узла
+    public ObjectNode toJSON() {
+        return toJSONbyJackson(new ObjectMapper());
+    }
+
+    // Делаем метод публичным для использования в других классах
+    public ObjectNode toJSONbyJackson(ObjectMapper mapper) {
         ObjectNode nodeJSON = mapper.createObjectNode();
 
         if(precedingJointMove != null) {
