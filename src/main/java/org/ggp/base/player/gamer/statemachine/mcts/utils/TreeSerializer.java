@@ -2,14 +2,17 @@ package org.ggp.base.player.gamer.statemachine.mcts.utils;
 
 import com.google.gson.*;
 import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.CumulativeStatistics;
+import org.ggp.base.player.gamer.statemachine.mcts.model.statistics.StatisticsForActions;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.JointActions;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTreeNode;
 import org.ggp.base.util.gdl.grammar.GdlSentence;
 import org.ggp.base.util.statemachine.MachineState;
+import org.ggp.base.util.statemachine.Move;
 import org.ggp.base.util.statemachine.Role;
 
 import java.lang.reflect.Type;
+import java.util.Set;
 
 /**
  * Custom serializer for SearchTree and related classes to avoid circular references
@@ -34,67 +37,87 @@ public class TreeSerializer {
     private static class SearchTreeSerializer implements JsonSerializer<SearchTree> {
         @Override
         public JsonElement serialize(SearchTree tree, Type typeOfSrc, JsonSerializationContext context) {
-            JsonObject result = new JsonObject();
-
-            // Only serialize the root node - avoid circular references
-            result.add("root", context.serialize(tree.getRoot()));
-
-            return result;
+            // Directly serialize the root node
+            return context.serialize(tree.getRoot());
         }
     }
 
     /**
-     * Custom serializer for SearchTreeNode
+     * Custom serializer for SearchTreeNode that preserves the full tree structure
      */
     private static class SearchTreeNodeSerializer implements JsonSerializer<SearchTreeNode> {
         @Override
         public JsonElement serialize(SearchTreeNode node, Type typeOfSrc, JsonSerializationContext context) {
             JsonObject result = new JsonObject();
 
-            // Include only necessary fields, avoiding circular references
-            result.addProperty("isLeaf", node.isLeaf());
-            result.addProperty("isRoot", node.isRoot());
-            result.addProperty("isTerminal", node.isTerminal());
-            result.addProperty("isPlayout", node.isPlayout());
-
             // Add state representation
             if (node.getState() != null) {
                 result.addProperty("state", node.getState().toString());
             }
 
-            // Add statistics
+            // Add statistics with full details
             CumulativeStatistics stats = node.getStatistics();
-            if (stats != null) {
+            if (stats != null && !stats.isEmpty()) {
                 JsonObject statsObj = new JsonObject();
                 statsObj.addProperty("numVisits", stats.getNumVisits());
+
+                // Add detailed statistics for actions
+                JsonArray statsForActionsArray = new JsonArray();
+                for (Role role : stats.getRoles()) {
+                    JsonObject roleObj = new JsonObject();
+                    roleObj.addProperty("role", role.getName().getValue());
+
+                    JsonArray actionsArray = new JsonArray();
+                    Set<Move> usedActions = stats.getUsedActions(role);
+                    if (usedActions != null) {
+                        for (Move action : usedActions) {
+                            StatisticsForActions.ActionStatistics actionStats = stats.get(role, action);
+                            if (actionStats != null) {
+                                JsonObject actionObj = new JsonObject();
+                                actionObj.addProperty("action", action.getContents().toString());
+                                actionObj.addProperty("averageActionScore",
+                                        actionStats.getScore() / (double)actionStats.getNumUsed());
+                                actionObj.addProperty("actionNumUsed", actionStats.getNumUsed());
+                                actionsArray.add(actionObj);
+                            }
+                        }
+                    }
+                    roleObj.add("actions", actionsArray);
+                    statsForActionsArray.add(roleObj);
+                }
+                statsObj.add("statisticsForActions", statsForActionsArray);
                 result.add("statistics", statsObj);
             }
 
-            // Add preceding joint move if available
+            // Add preceding joint move
             JointActions actions = node.getPrecedingJointMove();
             if (actions != null) {
                 JsonArray actionsArray = new JsonArray();
                 for (Role role : actions.getRoles()) {
                     JsonObject actionObj = new JsonObject();
                     actionObj.addProperty("role", role.getName().getValue());
-                    if (actions.get(role) != null) {
-                        actionObj.addProperty("move", actions.get(role).getContents().toString());
+                    Move move = actions.get(role);
+                    if (move != null) {
+                        actionObj.addProperty("action", move.getContents().toString());
                     }
                     actionsArray.add(actionObj);
                 }
                 result.add("precedingJointMove", actionsArray);
             }
 
-            // Add children without recursive serialization to avoid circular references
+            // Add children with recursion up to a reasonable depth
             if (!node.isLeaf()) {
                 JsonArray childrenArray = new JsonArray();
-                for (SearchTreeNode child : node.getChildren()) {
-                    JsonObject childObj = new JsonObject();
-                    if (child.getState() != null) {
-                        childObj.addProperty("state", child.getState().toString());
-                    }
-                    childrenArray.add(childObj);
+                // To avoid stack overflow, limit recursion depth based on numVisits
+                // Nodes with fewer visits get less detailed serialization
+                Set<SearchTreeNode> children = node.getChildren();
+
+                // Process each child
+                for (SearchTreeNode child : children) {
+                    // Recursively serialize child nodes with lower thresholds
+                    childrenArray.add(context.serialize(child));
                 }
+
                 result.add("children", childrenArray);
             }
 

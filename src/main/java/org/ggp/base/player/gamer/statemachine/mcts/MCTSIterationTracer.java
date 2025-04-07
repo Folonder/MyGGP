@@ -17,8 +17,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Класс для непосредственного отслеживания и логирования итераций MCTS
- * Может работать как с Redis, так и с записью в файл
+ * Class for directly tracking and logging MCTS iterations
+ * Can work with both Redis and file writing
  */
 public class MCTSIterationTracer implements Observer {
 
@@ -26,14 +26,46 @@ public class MCTSIterationTracer implements Observer {
     private File logDirectory;
     private boolean fileLoggingEnabled = true;
     private final ObjectMapper mapper = new ObjectMapper();
+    private String sessionId;
 
     /**
      * Creates a log directory for storing iteration data
      */
     public MCTSIterationTracer() {
-        // Create directory for logs
+        // Default constructor will use timestamp-based session ID
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss");
-        String directoryName = "mcts_logs_" + dateFormat.format(new Date());
+        this.sessionId = "mcts_" + dateFormat.format(new Date());
+        initLogDirectory();
+    }
+
+    /**
+     * Creates a log directory for storing iteration data with specified session ID
+     */
+    public MCTSIterationTracer(String sessionId) {
+        this.sessionId = sessionId;
+        initLogDirectory();
+    }
+
+    /**
+     * Initialize log directory in matches folder
+     */
+    private void initLogDirectory() {
+        // Create directory for logs in matches folder
+        String directoryName = "matches/" + sessionId;
+
+        System.out.println("Initializing log directory: " + directoryName);
+
+        // Ensure parent directory exists
+        File matchesDir = new File("matches");
+        if (!matchesDir.exists()) {
+            if (matchesDir.mkdir()) {
+                System.out.println("Created matches directory: " + matchesDir.getAbsolutePath());
+            } else {
+                System.err.println("Failed to create matches directory");
+                fileLoggingEnabled = false;
+                return;
+            }
+        }
 
         logDirectory = new File(directoryName);
         if (!logDirectory.exists()) {
@@ -43,6 +75,8 @@ public class MCTSIterationTracer implements Observer {
                 System.err.println("Failed to create log directory: " + directoryName);
                 fileLoggingEnabled = false;
             }
+        } else {
+            System.out.println("Log directory already exists: " + logDirectory.getAbsolutePath());
         }
     }
 

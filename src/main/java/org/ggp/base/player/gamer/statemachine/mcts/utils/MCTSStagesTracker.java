@@ -23,6 +23,9 @@ public class MCTSStagesTracker {
     public MCTSStagesTracker(int iterationNumber) {
         this.iterationNumber = iterationNumber;
         reset();
+
+        // Debug log to verify correct iteration number
+        System.out.println("Created MCTSStagesTracker for iteration #" + iterationNumber);
     }
 
     /**
@@ -33,13 +36,19 @@ public class MCTSStagesTracker {
         expansionData = mapper.createObjectNode();
         playoutData = mapper.createObjectNode();
         backpropagationData = mapper.createObjectNode();
+
+        // Initialize each stage data with the iteration number
+        selectionData.put("iterationNumber", iterationNumber);
+        expansionData.put("iterationNumber", iterationNumber);
+        playoutData.put("iterationNumber", iterationNumber);
+        backpropagationData.put("iterationNumber", iterationNumber);
     }
 
     /**
      * Records selection stage data
      */
     public void recordSelection(List<SearchTreeNode> path, SearchTreeNode selectedNode) {
-        selectionData.put("iterationNumber", iterationNumber);
+        // Iteration number is already set in reset()
         selectionData.put("pathLength", path.size());
 
         if (selectedNode != null) {
@@ -47,13 +56,15 @@ public class MCTSStagesTracker {
             selectionData.put("isTerminal", selectedNode.isTerminal());
             selectionData.put("isLeaf", selectedNode.isLeaf());
         }
+
+        System.out.println("Recorded selection data for iteration #" + iterationNumber);
     }
 
     /**
      * Records expansion stage data
      */
     public void recordExpansion(SearchTreeNode parentNode, List<SearchTreeNode> expandedNodes, SearchTreeNode selectedNode) {
-        expansionData.put("iterationNumber", iterationNumber);
+        // Iteration number is already set in reset()
         expansionData.put("expandedNodesCount", expandedNodes.size());
 
         if (parentNode != null) {
@@ -63,13 +74,15 @@ public class MCTSStagesTracker {
         if (selectedNode != null) {
             expansionData.put("selectedNodeState", selectedNode.getState().toString());
         }
+
+        System.out.println("Recorded expansion data for iteration #" + iterationNumber);
     }
 
     /**
      * Records playout stage data
      */
     public void recordPlayout(SearchTreeNode startNode, int depth, Map<Role, Double> scores) {
-        playoutData.put("iterationNumber", iterationNumber);
+        // Iteration number is already set in reset()
         playoutData.put("depth", depth);
 
         if (startNode != null) {
@@ -79,24 +92,28 @@ public class MCTSStagesTracker {
         ObjectNode scoresNode = playoutData.putObject("scores");
         if (scores != null) {
             for (Map.Entry<Role, Double> entry : scores.entrySet()) {
-                scoresNode.put(entry.getKey().toString(), entry.getValue());
+                scoresNode.put(entry.getKey().getName().getValue(), entry.getValue());
             }
         }
+
+        System.out.println("Recorded playout data for iteration #" + iterationNumber);
     }
 
     /**
      * Records backpropagation stage data
      */
     public void recordBackpropagation(List<SearchTreeNode> path, Map<Role, Double> scores) {
-        backpropagationData.put("iterationNumber", iterationNumber);
+        // Iteration number is already set in reset()
         backpropagationData.put("pathLength", path.size());
 
         ObjectNode scoresNode = backpropagationData.putObject("scores");
         if (scores != null) {
             for (Map.Entry<Role, Double> entry : scores.entrySet()) {
-                scoresNode.put(entry.getKey().toString(), entry.getValue());
+                scoresNode.put(entry.getKey().getName().getValue(), entry.getValue());
             }
         }
+
+        System.out.println("Recorded backpropagation data for iteration #" + iterationNumber);
     }
 
     /**
@@ -109,8 +126,10 @@ public class MCTSStagesTracker {
             result.put("expansion", mapper.writeValueAsString(expansionData));
             result.put("playout", mapper.writeValueAsString(playoutData));
             result.put("backpropagation", mapper.writeValueAsString(backpropagationData));
+
+            System.out.println("Retrieved all stages JSON for iteration #" + iterationNumber);
         } catch (Exception e) {
-            System.err.println("Error serializing stage data: " + e.getMessage());
+            System.err.println("Error serializing stage data for iteration #" + iterationNumber + ": " + e.getMessage());
         }
         return result;
     }
@@ -149,5 +168,12 @@ public class MCTSStagesTracker {
             System.err.println("Error serializing backpropagation data: " + e.getMessage());
             return "{}";
         }
+    }
+
+    /**
+     * Gets the iteration number for this tracker
+     */
+    public int getIterationNumber() {
+        return iterationNumber;
     }
 }

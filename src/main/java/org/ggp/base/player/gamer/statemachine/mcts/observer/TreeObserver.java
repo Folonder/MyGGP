@@ -1,6 +1,7 @@
 package org.ggp.base.player.gamer.statemachine.mcts.observer;
 
-import com.google.gson.*;
+import com.google.gson.Gson;
+import org.ggp.base.player.gamer.statemachine.mcts.MCTSIterationTracer;
 import org.ggp.base.player.gamer.statemachine.mcts.event.IterationEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeStartEvent;
@@ -10,8 +11,6 @@ import org.ggp.base.player.gamer.statemachine.mcts.utils.RedisHelper;
 import org.ggp.base.player.gamer.statemachine.mcts.utils.TreeSerializer;
 import org.ggp.base.util.observer.Event;
 import org.ggp.base.util.observer.Observer;
-
-import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 
@@ -25,6 +24,7 @@ public class TreeObserver implements Observer {
     private int growthLogCounter = 0;
     private int iterationLogCounter = 0;
     private boolean loggingEnabled = true;
+    private MCTSIterationTracer fileTracer;
 
     // Redis connection configuration
     private final JedisPool jedisPool;
@@ -62,6 +62,7 @@ public class TreeObserver implements Observer {
         // List existing keys if session is specified
         if (sessionId != null) {
             RedisHelper.listRedisKeys("mcts:" + sessionId + ":*");
+            fileTracer = new MCTSIterationTracer(sessionId);
         }
     }
 
@@ -79,6 +80,9 @@ public class TreeObserver implements Observer {
                     java.text.SimpleDateFormat formatter = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
                     sessionIdentifier = gameName + "_" + formatter.format(new java.util.Date()) + "_" +
                             Math.abs(java.util.UUID.randomUUID().getMostSignificantBits());
+
+                    // Create file tracer with the session ID
+                    fileTracer = new MCTSIterationTracer(sessionIdentifier);
                 }
 
                 // Reset counters
@@ -86,135 +90,121 @@ public class TreeObserver implements Observer {
                 iterationLogCounter = 0;
                 System.out.println("Tree logging initialized with Redis. Session ID: " + sessionIdentifier);
             } else if (event instanceof TreeEvent) {
-                // Обработка событий дерева (как было раньше)
+                // Processing tree events
                 TreeEvent treeEvent = ((TreeEvent) event);
 
-                // Create Redis key
-                String redisKey;
-
                 if (treeEvent.isGrowthEvent()) {
-                    // Format for growth events
-                    String growthLogId = String.format("%05d", growthLogCounter++);
+                    // Format for growth events - generate the ID first but don't increment yet
+                    String growthLogId = String.format("%05d", growthLogCounter);
                     String turnId = String.format("%03d", treeEvent.getTurnNumber());
 
                     System.out.println("\n=== Processing Growth Event ===");
                     System.out.println("Growth ID: " + growthLogId + ", Turn: " + turnId);
 
-                    // Get the tree as JSON using custom serializer
+                    // Get the tree
                     SearchTree tree = treeEvent.getTree();
+
+                    // Make sure tree is using the same session ID
+                    tree.setSessionId(sessionIdentifier);
 
                     // Check if we have stages data for this iteration
                     MCTSStagesTracker stagesTracker = tree.getCurrentStagesTracker();
 
+                    boolean saved = false;
                     if (stagesTracker != null) {
                         // Get all stage data
                         Map<String, String> stagesData = stagesTracker.getAllStagesJson();
 
-                        // Save tree separately using specialized method first
-                        boolean treeSaved = RedisHelper.saveTreeData(
+                        // Save growth with stages using hierarchical structure
+                        saved = RedisHelper.saveGrowthWithStages(
                                 sessionIdentifier,
                                 treeEvent.getTurnNumber(),
-                                growthLogCounter - 1,
+                                growthLogId,
+                                tree,
+                                stagesData
+                        );
+                    } else {
+                        // No stages data available, just save the tree
+                        saved = RedisHelper.saveTreeData(
+                                sessionIdentifier,
+                                treeEvent.getTurnNumber(),
+                                RedisHelper.TYPE_GROWTH + "_" + growthLogId,
                                 tree
                         );
-
-                        // Only save stages if tree was saved successfully
-                        if (treeSaved) {
-                            // Save each stage separately
-                            boolean allStagesSaved = true;
-                            for (Map.Entry<String, String> entry : stagesData.entrySet()) {
-                                String stageName = entry.getKey();
-                                String stageData = entry.getValue();
-
-                                String stageKey = String.format("mcts:%s:%s:growth_%s:%s",
-                                        sessionIdentifier, turnId, growthLogId, stageName);
-
-                                try (Jedis jedis = jedisPool.getResource()) {
-                                    String result = jedis.set(stageKey, stageData);
-                                    boolean success = "OK".equals(result);
-
-                                    if (success) {
-                                        System.out.println("Saved " + stageName + " stage to Redis");
-                                    } else {
-                                        System.err.println("Failed to save " + stageName + " stage to Redis");
-                                        allStagesSaved = false;
-                                    }
-                                } catch (Exception e) {
-                                    System.err.println("ERROR saving stage to Redis: " + e.getMessage());
-                                    allStagesSaved = false;
-                                }
-                            }
-
-                            System.out.println("Saved growth with stages: " +
-                                    (allStagesSaved ? "all successful" : "some stages failed"));
-                        } else {
-                            System.err.println("Failed to save tree, skipping stage saving");
-
-                            // Fallback to traditional approach for just the tree
-                            String traditionalRedisKey = String.format("mcts:%s:%s:growth_%s",
-                                    sessionIdentifier, turnId, growthLogId);
-
-                            try (Jedis jedis = jedisPool.getResource()) {
-                                String jsonTree = TreeSerializer.createGson().toJson(tree);
-                                jedis.set(traditionalRedisKey, jsonTree);
-                                System.out.println("Saved tree using traditional approach: " + traditionalRedisKey);
-                            } catch (Exception e) {
-                                System.err.println("ERROR using traditional approach: " + e.getMessage());
-                            }
-                        }
-                    } else {
-                        // Fallback to traditional approach if no stages data
-                        String traditionalRedisKey = String.format("mcts:%s:%s:growth_%s",
-                                sessionIdentifier, turnId, growthLogId);
-
-                        try (Jedis jedis = jedisPool.getResource()) {
-                            String jsonTree = TreeSerializer.createGson().toJson(tree);
-                            jedis.set(traditionalRedisKey, jsonTree);
-                            System.out.println("Saved tree (no stages data) to Redis: " + traditionalRedisKey);
-                        } catch (Exception e) {
-                            System.err.println("ERROR saving to Redis: " + e.getMessage());
-                            e.printStackTrace();
-                        }
                     }
 
-                    // Set redisKey for other conditions
-                    redisKey = String.format("mcts:%s:%s:growth_%s",
-                            sessionIdentifier, turnId, growthLogId);
+                    // Increment counter only after successful save
+                    if (saved) {
+                        growthLogCounter++;
+                        System.out.println("Successfully saved growth event " + growthLogId);
+                    } else {
+                        System.err.println("Failed to save growth event " + growthLogId);
+                    }
+
                 } else if (treeEvent.isFinalTree()) {
                     // Final tree state after a move
                     String turnId = String.format("%03d", treeEvent.getTurnNumber());
+                    String type;
 
-                    // Only store the final tree if we haven't already stored a final tree for this turn
-                    // This happens when the game is over (stateMachineStop/Abort is called)
+                    // Determine the type of final record
                     if (treeEvent.isGameOver()) {
-                        // For the game-over final state (after the last move)
-                        redisKey = String.format("mcts:%s:gameover", sessionIdentifier);
+                        type = RedisHelper.TYPE_GAMEOVER;
+                        System.out.println("\n=== Processing Game Over Tree ===");
                     } else {
-                        redisKey = String.format("mcts:%s:%s:final",
-                                sessionIdentifier,
-                                turnId);
+                        type = RedisHelper.TYPE_FINAL;
+                        System.out.println("\n=== Processing Final Tree for Turn " + turnId + " ===");
                     }
 
-                    // Reset growth counter for next turn
-                    growthLogCounter = 0;
+                    // Get the tree
+                    SearchTree tree = treeEvent.getTree();
 
-                    // Reset iteration counter for next turn
-                    iterationLogCounter = 0;
+                    // Make sure tree is using the same session ID
+                    tree.setSessionId(sessionIdentifier);
 
-                    System.out.println("Completed logging for turn " + treeEvent.getTurnNumber());
+                    // Save the tree data
+                    boolean saved = RedisHelper.saveTreeData(
+                            sessionIdentifier,
+                            treeEvent.getTurnNumber(),
+                            type,
+                            tree
+                    );
+
+                    if (saved) {
+                        System.out.println("Successfully saved " + type + " tree");
+                    } else {
+                        System.err.println("Failed to save " + type + " tree");
+                    }
+
+                    // Reset growth counter for next turn (but only if not game over)
+                    if (!treeEvent.isGameOver()) {
+                        growthLogCounter = 0;
+                        iterationLogCounter = 0;
+                        System.out.println("Completed logging for turn " + treeEvent.getTurnNumber());
+                    }
                 } else {
                     // For the initial tree
                     String turnId = String.format("%03d", treeEvent.getTurnNumber());
-                    redisKey = String.format("mcts:%s:%s:init",
-                            sessionIdentifier,
-                            turnId);
-                }
+                    System.out.println("\n=== Processing Initial Tree for Turn " + turnId + " ===");
 
-                // Store the tree in Redis
-                try (Jedis jedis = jedisPool.getResource()) {
-                    String jsonTree = gson.toJson(treeEvent.getTree());
-                    jedis.set(redisKey, jsonTree);
-                    System.out.println("Stored tree in Redis with key: " + redisKey);
+                    // Get the tree
+                    SearchTree tree = treeEvent.getTree();
+
+                    // Make sure tree is using the same session ID
+                    tree.setSessionId(sessionIdentifier);
+
+                    // Save the initial tree
+                    boolean saved = RedisHelper.saveTreeData(
+                            sessionIdentifier,
+                            treeEvent.getTurnNumber(),
+                            RedisHelper.TYPE_INIT,
+                            tree
+                    );
+
+                    if (saved) {
+                        System.out.println("Successfully saved initial tree");
+                    } else {
+                        System.err.println("Failed to save initial tree");
+                    }
                 }
             } else if (event instanceof IterationEvent) {
                 // Processing MCTS iteration events
@@ -224,8 +214,8 @@ public class TreeObserver implements Observer {
                 String turnId = String.format("%03d", iterationEvent.getTurnNumber());
                 String iterationId = String.format("%05d", iterationEvent.getIterationNumber());
 
-                System.out.println("=== Starting to save MCTS iteration ===");
-                System.out.println("Iteration: " + iterationEvent.getIterationNumber() + ", Turn: " + iterationEvent.getTurnNumber());
+                System.out.println("=== Processing Iteration Event ===");
+                System.out.println("Iteration: " + iterationId + ", Turn: " + turnId);
 
                 // Convert iteration data to JSON
                 String jsonIteration = gson.toJson(iterationEvent.getIterationData());
@@ -239,27 +229,18 @@ public class TreeObserver implements Observer {
                 );
 
                 if (saved) {
-                    System.out.println("Successfully saved iteration data to Redis using direct access");
+                    System.out.println("Successfully saved iteration data");
+
+                    // Increment iteration counter only after successful save
+                    iterationLogCounter++;
                 } else {
-                    System.err.println("Failed to save iteration data using direct access");
-
-                    // Fallback to traditional approach
-                    System.out.println("Trying traditional Redis approach...");
-                    String redisKey = String.format("mcts:%s:%s:iteration_%s",
-                            sessionIdentifier, turnId, iterationId);
-
-                    try (Jedis jedis = jedisPool.getResource()) {
-                        jedis.set(redisKey, jsonIteration);
-                        System.out.println("Saved iteration data to Redis using traditional approach: " + redisKey);
-                    } catch (Exception e) {
-                        System.err.println("ERROR saving to Redis (traditional): " + e.getMessage());
-                    }
+                    System.err.println("Failed to save iteration data");
                 }
 
-                System.out.println("=== End of saving MCTS iteration ===");
-
-                // Increment iteration counter
-                iterationLogCounter++;
+                // Also use the file tracer to save to file system
+                if (fileTracer != null) {
+                    fileTracer.observe(iterationEvent);
+                }
             }
         } catch (Exception e) {
             System.err.println("Error writing to Redis: " + e.getMessage());
