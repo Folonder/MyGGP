@@ -199,7 +199,7 @@ public class RedisHelper {
             // Save to Redis
             try (Jedis jedis = jedisPool.getResource()) {
                 // Save tree
-                String treeKey = baseKeyPrefix;
+                String treeKey = baseKeyPrefix + ":tree";
                 String treeResult = jedis.set(treeKey, treeJson);
                 boolean treeSuccess = "OK".equals(treeResult);
 
