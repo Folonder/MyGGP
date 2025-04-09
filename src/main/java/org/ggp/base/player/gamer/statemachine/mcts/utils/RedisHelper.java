@@ -1,6 +1,8 @@
 package org.ggp.base.player.gamer.statemachine.mcts.utils;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.ggp.base.player.gamer.statemachine.mcts.model.tree.SearchTree;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -83,7 +85,7 @@ public class RedisHelper {
         String iterationIdStr = String.format("%05d", iterationId);
 
         // Form the key
-        String redisKey = String.format("mcts:%s:%s:iteration_%s",
+        String redisKey = String.format("mcts:%s:%s:iteration:%s",
                 sessionId, turnIdStr, iterationIdStr);
 
         System.out.println("Attempting to save iteration directly to Redis key: " + redisKey);
@@ -193,14 +195,22 @@ public class RedisHelper {
         try {
             // Create Gson instance for tree serialization
             Gson gson = TreeSerializer.createGson();
-            String treeJson = gson.toJson(tree);
-            System.out.println("Tree JSON size: " + treeJson.length() + " bytes");
 
-            // Save to Redis
+            // Serialize the tree
+            String treeJson = gson.toJson(tree);
+
+            // Create a proper JSON object with "root" wrapper for Redis only
+            JsonObject rootWrapper = new JsonObject();
+            rootWrapper.add("root", JsonParser.parseString(treeJson));
+            String wrappedTreeJson = gson.toJson(rootWrapper);
+
+            System.out.println("Tree JSON size for Redis: " + wrappedTreeJson.length() + " bytes");
+
+            // Save to Redis - use wrapped JSON
             try (Jedis jedis = jedisPool.getResource()) {
                 // Save tree
                 String treeKey = baseKeyPrefix + ":tree";
-                String treeResult = jedis.set(treeKey, treeJson);
+                String treeResult = jedis.set(treeKey, wrappedTreeJson);
                 boolean treeSuccess = "OK".equals(treeResult);
 
                 if (treeSuccess) {
@@ -228,7 +238,7 @@ public class RedisHelper {
                 }
             }
 
-            // Also save to file system in matches directory
+            // Also save to file system in matches directory - use original JSON
             try {
                 String directoryName = "matches/" + sessionId;
 
@@ -244,7 +254,7 @@ public class RedisHelper {
                     dir.mkdirs();
                 }
 
-                // Save tree
+                // Save tree - use original unwrapped JSON for files
                 File treeFile = new File(dir, "growth_" + growthId + ".json");
                 try (FileWriter writer = new FileWriter(treeFile)) {
                     writer.write(treeJson);
@@ -298,7 +308,7 @@ public class RedisHelper {
             redisKey = String.format("mcts:%s:%s:init", sessionId, turnIdStr);
         } else {
             // Growth type with numeric id
-            redisKey = String.format("mcts:%s:%s:growth_%s", sessionId, turnIdStr, type);
+            redisKey = String.format("mcts:%s:%s:%s", sessionId, turnIdStr, type);
         }
 
         System.out.println("Attempting to save tree directly to Redis key: " + redisKey);
@@ -306,22 +316,30 @@ public class RedisHelper {
         try {
             // Use TreeSerializer for proper serialization
             Gson gson = TreeSerializer.createGson();
-            String jsonTree = gson.toJson(tree);
 
-            System.out.println("Tree JSON size: " + jsonTree.length() + " bytes");
+            // Serialize tree normally
+            String treeJson = gson.toJson(tree);
 
-            // Save to Redis
+            // Create wrapped version only for Redis
+            JsonObject rootWrapper = new JsonObject();
+            rootWrapper.add("root", JsonParser.parseString(treeJson));
+            String wrappedTreeJson = gson.toJson(rootWrapper);
+
+            System.out.println("Original tree JSON size: " + treeJson.length() + " bytes");
+            System.out.println("Wrapped tree JSON for Redis: " + wrappedTreeJson.length() + " bytes");
+
+            // Save to Redis with wrapped JSON
             boolean redisSuccess = false;
             try (Jedis jedis = jedisPool.getResource()) {
                 // Set with no expiration
-                String result = jedis.set(redisKey, jsonTree);
+                String result = jedis.set(redisKey, wrappedTreeJson);
                 redisSuccess = "OK".equals(result);
                 System.out.println("Redis save result: " + (redisSuccess ? "SUCCESS" : "FAILED"));
             } catch (Exception e) {
                 System.err.println("ERROR saving to Redis: " + e.getMessage());
             }
 
-            // Also save to file system in matches directory
+            // Also save to file system in matches directory with original unwrapped JSON
             boolean fileSuccess = false;
             try {
                 String directoryName = "matches/" + sessionId;
@@ -352,7 +370,7 @@ public class RedisHelper {
                 }
 
                 try (FileWriter writer = new FileWriter(outFile)) {
-                    writer.write(jsonTree);
+                    writer.write(treeJson);  // Use original JSON for file system
                 }
                 System.out.println("Saved tree to file: " + outFile.getAbsolutePath());
                 fileSuccess = true;
