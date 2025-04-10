@@ -1,6 +1,6 @@
 package org.ggp.base.player.gamer.statemachine.mcts.observer;
 
-import com.google.gson.Gson;
+import com.google.gson.*;
 import org.ggp.base.player.gamer.statemachine.mcts.MCTSIterationTracer;
 import org.ggp.base.player.gamer.statemachine.mcts.event.IterationEvent;
 import org.ggp.base.player.gamer.statemachine.mcts.event.TreeEvent;
