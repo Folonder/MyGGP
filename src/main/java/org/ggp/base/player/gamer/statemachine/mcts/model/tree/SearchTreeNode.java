@@ -11,6 +11,7 @@ import org.ggp.base.util.statemachine.StateMachine;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 public class SearchTreeNode {
     private final transient SearchTree treeOwner;
@@ -24,13 +25,18 @@ public class SearchTreeNode {
 
     private boolean isPlayout;
 
+    private final String nodeId; // New field for consistent ID
+
     public SearchTreeNode(SearchTree treeOwner, MachineState state, JointActions precedingJointMove) {
         this.treeOwner = treeOwner;
         this.state = state;
         this.precedingJointMove = precedingJointMove;
-        children = new HashSet<>();
-        statistics = new CumulativeStatistics();
-        isPlayout = false;
+        this.children = new HashSet<>();
+        this.statistics = new CumulativeStatistics();
+        this.isPlayout = false;
+
+        // Generate deterministic ID based on state content - always same ID for same state
+        this.nodeId = UUID.nameUUIDFromBytes(state.toString().getBytes()).toString();
     }
 
     public StateMachine getGameModel() {
@@ -43,6 +49,10 @@ public class SearchTreeNode {
 
     public boolean isRoot() {
         return parent == null;
+    }
+
+    public String getNodeId() {
+        return nodeId;
     }
 
     void becomeRoot() {
@@ -115,6 +125,7 @@ public class SearchTreeNode {
 
     ObjectNode toJSONbyJackson(ObjectMapper mapper) {
         ObjectNode nodeJSON = mapper.createObjectNode();
+        nodeJSON.put("id", nodeId);
 
         if(precedingJointMove != null) {
             nodeJSON.putIfAbsent("precedingJointMove", precedingJointMove.toJSONbyJackson(mapper));
