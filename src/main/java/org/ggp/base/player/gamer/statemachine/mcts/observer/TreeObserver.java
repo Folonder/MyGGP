@@ -24,8 +24,8 @@ public class TreeObserver implements Observer {
 
     // Redis connection configuration
     private final JedisPool jedisPool;
-    private final String redisHost = "localhost";
-    private final int redisPort = 5003;
+    private final String redisHost = "redis";
+    private final int redisPort = 6379;
     private final String redisPassword = "password";
 
     /**
