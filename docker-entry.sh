@@ -10,8 +10,9 @@ run_player() {
 
 # Функция для запуска GameServer
 run_game_server() {
-    echo "Запуск GameServer с параметрами: $*"
-    gradle gameServerRunner -Pmyargs="$*"
+    echo "Запуск GameServerRunnerMany с параметрами: $*"
+    # Передаем аргументы в Java-приложение
+    java -cp build/classes/java/main:build/resources/main:lib/Guava/guava-14.0.1.jar:lib/jackson-databind/jackson-databind-2.17.0.jar:lib/jackson-databind/jackson-core-2.17.0.jar:lib/jackson-databind/jackson-annotations-2.17.0.jar org.ggp.base.apps.utilities.GameServerRunnerMany $*
 }
 
 # Определяем, какой компонент запускать
